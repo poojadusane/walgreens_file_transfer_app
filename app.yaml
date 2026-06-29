@@ -1,0 +1,8 @@
+command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+env:
+  - name: WAREHOUSE_ID
+    value: "c65468b09820ba98"
+  - name: JWT_SECRET
+    value: "lazy-beaver-demo-2026"
+  - name: APP_CATALOG
+    value: "lazy_beaver"
