@@ -22,20 +22,32 @@ const LvlBadge = ({ level }: { level: string }) => (
   }}>{level}</span>
 )
 
+function highlight(text: string, query: string) {
+  if (!query) return <>{text}</>
+  const idx = text.toLowerCase().indexOf(query.toLowerCase())
+  if (idx === -1) return <>{text}</>
+  return (
+    <>
+      {text.slice(0, idx)}
+      <mark style={{ background: '#fff3b0', borderRadius: 2, padding: '0 1px' }}>
+        {text.slice(idx, idx + query.length)}
+      </mark>
+      {text.slice(idx + query.length)}
+    </>
+  )
+}
+
 export default function AdminPage({ session: _session }: { session: Session }) {
-  const [perms, setPerms]       = useState<Permission[]>([])
-  const [users, setUsers]       = useState<AdminUser[]>([])
+  const [perms, setPerms]           = useState<Permission[]>([])
+  const [users, setUsers]           = useState<AdminUser[]>([])
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
-  const [loading, setLoading]   = useState(true)
-  const [editRow, setEditRow]   = useState<Permission | null>(null)
-  const [showAdd, setShowAdd]   = useState(false)
-  const [newPerm, setNewPerm]   = useState<PermBody>({ user_id: '', workspace_id: '', volume: '', folder_path: '', permission: 'READ' })
-  const [error, setError]       = useState('')
-  const [fUser, setFUser]       = useState('')
-  const [fWorkspace, setFWorkspace] = useState('')
-  const [fVolume, setFVolume]   = useState('')
-  const [fPermission, setFPermission] = useState('')
-  const [importMsg, setImportMsg] = useState('')
+  const [loading, setLoading]       = useState(true)
+  const [editRow, setEditRow]       = useState<Permission | null>(null)
+  const [showAdd, setShowAdd]       = useState(false)
+  const [newPerm, setNewPerm]       = useState<PermBody>({ user_id: '', workspace_id: '', volume: '', folder_path: '', permission: 'READ' })
+  const [error, setError]           = useState('')
+  const [search, setSearch]         = useState('')
+  const [importMsg, setImportMsg]   = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   async function handleImport(e: React.ChangeEvent<HTMLInputElement>) {
@@ -92,6 +104,16 @@ export default function AdminPage({ session: _session }: { session: Session }) {
     background: '#fff', color: 'var(--db-ink)', width: '100%', cursor: 'pointer',
   }
 
+  const q = search.trim().toLowerCase()
+  const filtered = !q ? perms : perms.filter(p =>
+    p.display_name.toLowerCase().includes(q) ||
+    (p.databricks_upn || '').toLowerCase().includes(q) ||
+    p.workspace_name.toLowerCase().includes(q) ||
+    p.volume.toLowerCase().includes(q) ||
+    p.folder_path.toLowerCase().includes(q) ||
+    p.permission.toLowerCase().includes(q)
+  )
+
   return (
     <div style={{ padding: '32px 40px', overflow: 'auto', flex: 1 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
@@ -129,28 +151,34 @@ export default function AdminPage({ session: _session }: { session: Session }) {
         Changes to permissions take effect immediately — no redeploy required. Delta table stores full change history.
       </div>
 
-      {/* filters */}
-      <div style={{ display: 'flex', gap: 10, marginBottom: 16, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-        {([
-          { label: 'User', value: fUser, set: setFUser, opts: [...new Set(perms.map(p => p.display_name))].sort() },
-          { label: 'Workspace', value: fWorkspace, set: setFWorkspace, opts: [...new Set(perms.map(p => p.workspace_name))].sort() },
-          { label: 'Volume', value: fVolume, set: setFVolume, opts: [...new Set(perms.map(p => p.volume))].sort() },
-          { label: 'Permission', value: fPermission, set: setFPermission, opts: ['READ', 'DOWNLOAD'] },
-        ] as { label: string; value: string; set: (v: string) => void; opts: string[] }[]).map(({ label, value, set, opts }) => (
-          <div key={label}>
-            <label style={{ display: 'block', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: 'var(--db-navy)', marginBottom: 4 }}>{label}</label>
-            <select value={value} onChange={e => set(e.target.value)}
-              style={{ ...selectStyle, width: 160, background: value ? 'var(--db-navy)' : '#fff', color: value ? '#fff' : 'var(--db-ink)' }}>
-              <option value="">All</option>
-              {opts.map(o => <option key={o} value={o}>{o}</option>)}
-            </select>
-          </div>
-        ))}
-        {(fUser || fWorkspace || fVolume || fPermission) && (
-          <button onClick={() => { setFUser(''); setFWorkspace(''); setFVolume(''); setFPermission('') }}
-            style={{ fontSize: 12, padding: '7px 12px', borderRadius: 'var(--r-sm)', color: 'var(--db-ink-soft)', border: '1px solid var(--db-line)', alignSelf: 'flex-end' }}>
-            Clear filters
-          </button>
+      {/* search */}
+      <div style={{ position: 'relative', marginBottom: 16 }}>
+        <svg style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--db-ink-muted)', pointerEvents: 'none' }}
+          width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <circle cx="6.5" cy="6.5" r="5"/><path d="M11 11l3 3"/>
+        </svg>
+        <input
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Search by name, email, workspace, volume, folder, or permission…"
+          style={{
+            width: '100%', boxSizing: 'border-box',
+            padding: '10px 36px 10px 36px',
+            fontSize: 13, fontFamily: 'inherit',
+            border: '1px solid var(--db-gray-300)', borderRadius: 'var(--r-sm)',
+            background: '#fff', color: 'var(--db-ink)', outline: 'none',
+          }}
+        />
+        {search && (
+          <button onClick={() => setSearch('')} style={{
+            position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
+            color: 'var(--db-ink-muted)', padding: 4, lineHeight: 1,
+          }}>×</button>
+        )}
+        {q && (
+          <span style={{ position: 'absolute', right: search ? 32 : 10, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: 'var(--db-ink-muted)' }}>
+            {filtered.length} result{filtered.length !== 1 ? 's' : ''}
+          </span>
         )}
       </div>
 
@@ -206,25 +234,31 @@ export default function AdminPage({ session: _session }: { session: Session }) {
         <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff', borderRadius: 'var(--r-md)', border: '1px solid var(--db-line)', boxShadow: 'var(--shadow-sm)', overflow: 'hidden' }}>
           <thead>
             <tr>
-              {['User', 'Workspace', 'Volume', 'Folder', 'Permission', 'Granted By', ''].map((h, i) => (
-                <th key={i} style={{ textAlign: 'left', padding: '11px 14px', fontSize: 11, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: '#fff', background: 'var(--db-navy)' }}>{h}</th>
+              {['User', 'Email', 'Workspace', 'Volume', 'Folder', 'Permission', 'Granted By', ''].map((h, i) => (
+                <th key={i} style={{ textAlign: 'left', padding: '11px 14px', fontSize: 11, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: '#fff', background: 'var(--db-navy)', whiteSpace: 'nowrap' }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {perms.filter(p =>
-              (!fUser       || p.display_name  === fUser) &&
-              (!fWorkspace  || p.workspace_name === fWorkspace) &&
-              (!fVolume     || p.volume         === fVolume) &&
-              (!fPermission || p.permission     === fPermission)
-            ).map((p, i) => {
+            {filtered.map((p, i) => {
               const isEditing = editRow?.user_id === p.user_id && editRow?.workspace_id === p.workspace_id && editRow?.volume === p.volume && editRow?.folder_path === p.folder_path
               return (
-                <tr key={i} style={{ borderTop: '1px solid var(--db-line)' }}>
-                  <td style={{ padding: '10px 14px', fontWeight: 600, color: 'var(--db-navy)', fontSize: 13 }}>{p.display_name}</td>
-                  <td style={{ padding: '10px 14px', color: 'var(--db-ink-soft)', fontSize: 13 }}>{p.workspace_name}</td>
-                  <td style={{ padding: '10px 14px', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{p.volume}</td>
-                  <td style={{ padding: '10px 14px', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{p.folder_path}</td>
+                <tr key={i} style={{ borderTop: '1px solid var(--db-line)', background: i % 2 === 0 ? '#fff' : '#fafaf9' }}>
+                  <td style={{ padding: '10px 14px', fontWeight: 600, color: 'var(--db-navy)', fontSize: 13, whiteSpace: 'nowrap' }}>
+                    {highlight(p.display_name, search)}
+                  </td>
+                  <td style={{ padding: '10px 14px', color: 'var(--db-ink-soft)', fontSize: 12, fontFamily: 'var(--font-mono)' }}>
+                    {highlight(p.databricks_upn || '', search)}
+                  </td>
+                  <td style={{ padding: '10px 14px', color: 'var(--db-ink-soft)', fontSize: 13 }}>
+                    {highlight(p.workspace_name, search)}
+                  </td>
+                  <td style={{ padding: '10px 14px', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+                    {highlight(p.volume, search)}
+                  </td>
+                  <td style={{ padding: '10px 14px', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+                    {highlight(p.folder_path, search)}
+                  </td>
                   <td style={{ padding: '10px 14px' }}>
                     {isEditing ? (
                       <select value={editRow!.permission} onChange={e => setEditRow({ ...editRow!, permission: e.target.value })} style={{ ...selectStyle, width: 'auto' }}>
@@ -258,14 +292,9 @@ export default function AdminPage({ session: _session }: { session: Session }) {
                 </tr>
               )
             })}
-            {perms.filter(p =>
-              (!fUser       || p.display_name  === fUser) &&
-              (!fWorkspace  || p.workspace_name === fWorkspace) &&
-              (!fVolume     || p.volume         === fVolume) &&
-              (!fPermission || p.permission     === fPermission)
-            ).length === 0 && (
-              <tr><td colSpan={7} style={{ padding: '48px', textAlign: 'center', color: 'var(--db-ink-muted)' }}>
-                {fUser || fWorkspace || fVolume || fPermission ? 'No permissions match the current filters.' : 'No permissions configured.'}
+            {filtered.length === 0 && (
+              <tr><td colSpan={8} style={{ padding: '48px', textAlign: 'center', color: 'var(--db-ink-muted)' }}>
+                {q ? `No permissions match "${search}".` : 'No permissions configured.'}
               </td></tr>
             )}
           </tbody>
