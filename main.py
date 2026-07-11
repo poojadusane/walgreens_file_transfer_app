@@ -202,12 +202,13 @@ def download_zip(body: ZipBody, user: dict = Depends(current_user)):
 @app.get("/api/admin/permissions")
 def admin_list_permissions(user: dict = Depends(require_admin)):
     return run_sql(f"""
-        SELECT p.user_id, u.display_name, p.workspace_id, w.display_name AS workspace_name,
+        SELECT p.user_id, u.display_name, u.databricks_upn, p.workspace_id,
+               w.display_name AS workspace_name,
                p.volume, p.folder_path, p.permission, p.granted_by, p.granted_at
         FROM {APP_CATALOG}.config.permissions p
         JOIN {APP_CATALOG}.config.users u ON p.user_id = u.user_id
         JOIN {APP_CATALOG}.config.workspaces w ON p.workspace_id = w.workspace_id
-        ORDER BY p.user_id, p.workspace_id, p.volume, p.folder_path
+        ORDER BY u.display_name, p.workspace_id, p.volume, p.folder_path
     """)
 
 

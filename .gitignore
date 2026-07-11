@@ -1,6 +1,5 @@
 .databricks/
 node_modules/
-frontend/dist/
 __pycache__/
 *.pyc
 .env

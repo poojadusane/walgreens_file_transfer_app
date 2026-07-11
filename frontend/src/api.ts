@@ -83,7 +83,7 @@ export interface VolumeGroup { volume: string; folders: FolderPerm[] }
 export interface FileEntry  { name: string; size: number; modified: number }
 export interface FileListResp { files: FileEntry[]; permission: 'READ' | 'DOWNLOAD' }
 export interface Permission {
-  user_id: string; display_name: string
+  user_id: string; display_name: string; databricks_upn: string
   workspace_id: string; workspace_name: string
   volume: string; folder_path: string
   permission: string; granted_by: string; granted_at: string
