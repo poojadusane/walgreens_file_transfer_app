@@ -32,19 +32,19 @@ export const api = {
 
   getWorkspaces: ()               => req<Workspace[]>('GET', '/workspaces'),
   getVolumes: (ws: string)        => req<VolumeGroup[]>('GET', `/volumes?workspace_id=${ws}`),
-  listFiles:  (ws: string, vol: string, folder: string) =>
-    req<FileListResp>('GET', `/files?workspace_id=${ws}&volume=${vol}&folder=${encodeURIComponent(folder)}`),
+  listFiles:  (ws: string, cat: string, sch: string, vol: string, folder: string) =>
+    req<FileListResp>('GET', `/files?workspace_id=${ws}&uc_catalog=${encodeURIComponent(cat)}&uc_schema=${encodeURIComponent(sch)}&volume=${encodeURIComponent(vol)}&folder=${encodeURIComponent(folder)}`),
 
-  downloadFile: (ws: string, vol: string, folder: string, filename: string) => {
-    const url = `${BASE}/download?workspace_id=${ws}&volume=${vol}&folder=${encodeURIComponent(folder)}&filename=${encodeURIComponent(filename)}`
+  downloadFile: (ws: string, cat: string, sch: string, vol: string, folder: string, filename: string) => {
+    const url = `${BASE}/download?workspace_id=${ws}&uc_catalog=${encodeURIComponent(cat)}&uc_schema=${encodeURIComponent(sch)}&volume=${encodeURIComponent(vol)}&folder=${encodeURIComponent(folder)}&filename=${encodeURIComponent(filename)}`
     return fetch(url, { headers: { 'X-LB-Token': token() } })
   },
 
-  downloadZip: (ws: string, vol: string, folder: string, filenames: string[]) =>
+  downloadZip: (ws: string, cat: string, sch: string, vol: string, folder: string, filenames: string[]) =>
     fetch(`${BASE}/download-zip`, {
       method: 'POST',
       headers: headers(),
-      body: JSON.stringify({ workspace_id: ws, volume: vol, folder, filenames }),
+      body: JSON.stringify({ workspace_id: ws, uc_catalog: cat, uc_schema: sch, volume: vol, folder, filenames }),
     }),
 
   adminGetPermissions: ()           => req<Permission[]>('GET', '/admin/permissions'),
@@ -54,6 +54,9 @@ export const api = {
   adminUpdatePermission: (p: PermBody)  => req('PUT', '/admin/permission', p),
   adminDeletePermission: (p: DeleteBody) => req('DELETE', '/admin/permission', p),
   adminBulkPermissions: (changes: BulkChange[]) => req('POST', '/admin/permissions/bulk', { changes }),
+  adminAddUser:      (b: AddUserBody)      => req<{ ok: boolean; user_id: string }>('POST', '/admin/user', b),
+  adminAddWorkspace: (b: AddWorkspaceBody) => req('POST', '/admin/workspace', b),
+  adminSetAdmin:     (b: SetAdminBody)     => req('PUT', '/admin/user/admin', b),
 
   adminImportCsv: async (file: File): Promise<ImportResult> => {
     const fd = new FormData()
@@ -70,26 +73,30 @@ export const api = {
     return res.json()
   },
 
-  previewFile: (ws: string, vol: string, folder: string, filename: string) =>
+  previewFile: (ws: string, cat: string, sch: string, vol: string, folder: string, filename: string) =>
     req<{ content: string; filename: string }>('GET',
-      `/preview?workspace_id=${ws}&volume=${vol}&folder=${encodeURIComponent(folder)}&filename=${encodeURIComponent(filename)}`),
+      `/preview?workspace_id=${ws}&uc_catalog=${encodeURIComponent(cat)}&uc_schema=${encodeURIComponent(sch)}&volume=${encodeURIComponent(vol)}&folder=${encodeURIComponent(folder)}&filename=${encodeURIComponent(filename)}`),
 }
 
 // ── types ─────────────────────────────────────────────────
 export interface LoginResp  { token: string; user: { user_id: string; display_name: string; is_admin: boolean } }
 export interface Workspace  { workspace_id: string; display_name: string; host_url: string }
 export interface FolderPerm { folder: string; permission: 'READ' | 'DOWNLOAD' }
-export interface VolumeGroup { volume: string; folders: FolderPerm[] }
+export interface VolumeGroup { uc_catalog: string; uc_schema: string; volume: string; folders: FolderPerm[] }
 export interface FileEntry  { name: string; size: number; modified: number }
 export interface FileListResp { files: FileEntry[]; permission: 'READ' | 'DOWNLOAD' }
 export interface Permission {
   user_id: string; display_name: string; databricks_upn: string
   workspace_id: string; workspace_name: string
+  uc_catalog: string; uc_schema: string
   volume: string; folder_path: string
   permission: string; granted_by: string; granted_at: string
 }
 export interface AdminUser  { user_id: string; display_name: string; databricks_upn: string; is_admin: boolean }
-export interface PermBody   { user_id: string; workspace_id: string; volume: string; folder_path: string; permission: string }
-export interface DeleteBody { user_id: string; workspace_id: string; volume: string; folder_path: string }
-export interface BulkChange { user_id: string; workspace_id: string; volume: string; folder_path: string; permission: string | null }
+export interface PermBody   { user_id: string; workspace_id: string; uc_catalog: string; uc_schema: string; volume: string; folder_path: string; permission: string }
+export interface DeleteBody { user_id: string; workspace_id: string; uc_catalog: string; uc_schema: string; volume: string; folder_path: string }
+export interface BulkChange { user_id: string; workspace_id: string; uc_catalog: string; uc_schema: string; volume: string; folder_path: string; permission: string | null }
 export interface ImportResult { users_added: number; permissions_added: number }
+export interface AddUserBody      { display_name: string; databricks_upn: string; is_admin: boolean }
+export interface AddWorkspaceBody { workspace_id: string; display_name: string; host_url: string }
+export interface SetAdminBody     { user_id: string; is_admin: boolean }

@@ -1,35 +1,52 @@
--- Walgreens File Transfer — one-time setup
--- Run this in any Databricks SQL editor against your Unity Catalog metastore.
--- Replace 'wag_file_transfer' with your chosen catalog name, then set the same
--- value as APP_CATALOG in app.yaml before deploying.
+-- Walgreens File Transfer — setup / reseed
+-- =============================================================================
+-- BEFORE RUNNING: replace the placeholder <APP_CATALOG> everywhere below with
+-- the catalog name you set as APP_CATALOG in app.yaml. Use Find & Replace
+-- (Ctrl+H) on <APP_CATALOG>. The schema must always stay literally `config`
+-- (the app hard-codes that part).
+--
+-- This is a WIPE & RESEED script: it DROPs and recreates the 3 config tables,
+-- clearing any existing users / workspaces / permissions. Comment out the DROP
+-- lines if you need to preserve existing data.
+-- =============================================================================
 
-CREATE CATALOG IF NOT EXISTS wag_file_transfer;
-CREATE SCHEMA  IF NOT EXISTS wag_file_transfer.config;
+CREATE SCHEMA IF NOT EXISTS <APP_CATALOG>.config;
 
--- Workspaces: one row per Databricks workspace whose volumes you want to expose.
--- uc_catalog / uc_schema point to where the volumes live in Unity Catalog.
-CREATE TABLE IF NOT EXISTS wag_file_transfer.config.workspaces (
-  workspace_id STRING,   -- short logical ID referenced in the permissions table
-  display_name STRING,   -- shown in the workspace dropdown
-  host_url     STRING,   -- e.g. https://adb-1234567890.12.azuredatabricks.net
-  uc_catalog   STRING,   -- UC catalog that contains the volumes
-  uc_schema    STRING    -- schema within that catalog
+-- ── workspaces ────────────────────────────────────────────────────────────────
+-- One row per real Databricks workspace you want to group volumes under.
+-- Catalog/schema are NOT stored here — each permission row carries its own
+-- catalog + schema, so one workspace can expose volumes from many catalogs and
+-- many schemas.
+DROP TABLE IF EXISTS <APP_CATALOG>.config.workspaces;
+CREATE TABLE <APP_CATALOG>.config.workspaces (
+  workspace_id STRING,   -- the real Databricks workspace id (e.g. 5346339970823458)
+  display_name STRING,   -- friendly name shown in the UI
+  host_url     STRING    -- e.g. https://adb-<id>.<n>.azuredatabricks.net
 );
 
--- Users: one row per person who should be able to access the app.
--- databricks_upn must match their Azure AD UPN exactly (e.g. jane.doe@walgreens.com).
-CREATE TABLE IF NOT EXISTS wag_file_transfer.config.users (
+-- ── users ─────────────────────────────────────────────────────────────────────
+-- One row per person who can access the app.
+-- databricks_upn must match their Azure AD SSO email exactly.
+DROP TABLE IF EXISTS <APP_CATALOG>.config.users;
+CREATE TABLE <APP_CATALOG>.config.users (
   user_id        STRING,
   display_name   STRING,
   databricks_upn STRING,
-  is_admin       BOOLEAN DEFAULT false
+  is_admin       BOOLEAN
 );
 
--- Permissions: one row per (user, workspace, volume, folder) combination.
+-- ── permissions ───────────────────────────────────────────────────────────────
+-- One row per (user, workspace, catalog, schema, volume, folder) grant.
+-- uc_catalog / uc_schema pin down exactly where the volume lives, so a single
+-- workspace can span multiple catalogs and schemas.
+-- COLUMN ORDER IS LOAD-BEARING: the app inserts positionally in this exact order.
 -- permission is 'READ' (view only) or 'DOWNLOAD' (can download files).
-CREATE TABLE IF NOT EXISTS wag_file_transfer.config.permissions (
+DROP TABLE IF EXISTS <APP_CATALOG>.config.permissions;
+CREATE TABLE <APP_CATALOG>.config.permissions (
   user_id      STRING,
   workspace_id STRING,
+  uc_catalog   STRING,
+  uc_schema    STRING,
   volume       STRING,
   folder_path  STRING,
   permission   STRING,
@@ -37,9 +54,15 @@ CREATE TABLE IF NOT EXISTS wag_file_transfer.config.permissions (
   granted_at   TIMESTAMP
 );
 
--- FIRST ADMIN: insert yourself before opening the app for the first time.
--- Without this row no one can log in (the app requires a provisioned admin).
--- Uncomment and fill in your details:
+-- ── FIRST ADMIN (required) ──────────────────────────────────────────────────
+-- You must insert at least one admin before opening the app, or no one can log
+-- in. Replace the values with your own. user_id can be any unique string
+-- (your Databricks numeric id is a good choice); databricks_upn must match your
+-- SSO email exactly; is_admin must be true.
 --
--- INSERT INTO wag_file_transfer.config.users VALUES
---   ('admin', 'Your Name', 'you@walgreens.com', true);
+-- INSERT INTO <APP_CATALOG>.config.users
+--   (user_id, display_name, databricks_upn, is_admin) VALUES
+--   ('<your_user_id>', '<Your Name>', '<you@company.com>', true);
+--
+-- Everything else (workspaces, more users, permissions) can be added from the
+-- app's Admin page or via CSV import — no SQL needed after this.

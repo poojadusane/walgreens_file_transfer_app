@@ -47,6 +47,8 @@ export default function BrowserPage({ session }: { session: Session }) {
   const [activeWs, setActiveWs] = useState('')
   const [volumes, setVolumes] = useState<VolumeGroup[]>([])
   const [activeVol, setActiveVol] = useState('')
+  const [activeCat, setActiveCat] = useState('')
+  const [activeSch, setActiveSch] = useState('')
   const [activeFolder, setActiveFolder] = useState('')
   const [files, setFiles] = useState<FileEntry[]>([])
   const [permission, setPermission] = useState<'READ' | 'DOWNLOAD'>('READ')
@@ -70,6 +72,8 @@ export default function BrowserPage({ session }: { session: Session }) {
     api.getVolumes(activeWs).then(vols => {
       setVolumes(vols)
       setActiveVol('')
+      setActiveCat('')
+      setActiveSch('')
       setActiveFolder('')
       setFiles([])
     }).catch(e => setError(e.message))
@@ -77,23 +81,23 @@ export default function BrowserPage({ session }: { session: Session }) {
 
   // load files when folder selected
   useEffect(() => {
-    if (!activeWs || !activeVol || !activeFolder) return
+    if (!activeWs || !activeCat || !activeSch || !activeVol || !activeFolder) return
     setLoading(true)
     setFiles([])
     setSelected(new Set())
     setPreview(null)
     setError('')
-    api.listFiles(activeWs, activeVol, activeFolder)
+    api.listFiles(activeWs, activeCat, activeSch, activeVol, activeFolder)
       .then(resp => { setFiles(resp.files); setPermission(resp.permission) })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
-  }, [activeWs, activeVol, activeFolder])
+  }, [activeWs, activeCat, activeSch, activeVol, activeFolder])
 
   async function openPreview(filename: string) {
     setPreviewLoading(true)
     setPreview(null)
     try {
-      const resp = await api.previewFile(activeWs, activeVol, activeFolder, filename)
+      const resp = await api.previewFile(activeWs, activeCat, activeSch, activeVol, activeFolder, filename)
       const { headers, rows, truncated } = parseCSV(resp.content)
       setPreview({ filename, headers, rows, truncated })
     } catch (e: any) { setError(e.message) }
@@ -105,11 +109,12 @@ export default function BrowserPage({ session }: { session: Session }) {
     setView('volumes')
   }
 
-  function pickVolume(volId: string) {
-    setActiveVol(volId)
+  function pickVolume(vol: VolumeGroup) {
+    setActiveCat(vol.uc_catalog)
+    setActiveSch(vol.uc_schema)
+    setActiveVol(vol.volume)
     setView('files')
-    const vol = volumes.find(v => v.volume === volId)
-    if (vol?.folders.length) setActiveFolder(vol.folders[0].folder)
+    if (vol.folders.length) setActiveFolder(vol.folders[0].folder)
   }
 
   function pickFolder(folder: string) {
@@ -117,14 +122,14 @@ export default function BrowserPage({ session }: { session: Session }) {
   }
 
   function goTo(v: View, ws = '', vol = '', folder = '') {
-    if (v === 'workspaces') { setActiveWs(''); setActiveVol(''); setActiveFolder(''); }
-    if (v === 'volumes') { setActiveVol(''); setActiveFolder(''); }
+    if (v === 'workspaces') { setActiveWs(''); setActiveVol(''); setActiveCat(''); setActiveSch(''); setActiveFolder(''); }
+    if (v === 'volumes') { setActiveVol(''); setActiveCat(''); setActiveSch(''); setActiveFolder(''); }
     if (v === 'files') setActiveFolder(folder)
     setView(v)
   }
 
   const activeWsData = workspaces.find(w => w.workspace_id === activeWs)
-  const activeVolData = volumes.find(v => v.volume === activeVol)
+  const activeVolData = volumes.find(v => v.volume === activeVol && v.uc_catalog === activeCat && v.uc_schema === activeSch)
   const activeFolderPerm = activeVolData?.folders.find(f => f.folder === activeFolder)?.permission ?? 'READ'
   const isDownload = activeFolderPerm === 'DOWNLOAD'
 
@@ -133,9 +138,9 @@ export default function BrowserPage({ session }: { session: Session }) {
     try {
       let resp: Response
       if (filename) {
-        resp = await api.downloadFile(activeWs, activeVol, activeFolder, filename)
+        resp = await api.downloadFile(activeWs, activeCat, activeSch, activeVol, activeFolder, filename)
       } else {
-        resp = await api.downloadZip(activeWs, activeVol, activeFolder, Array.from(selected))
+        resp = await api.downloadZip(activeWs, activeCat, activeSch, activeVol, activeFolder, Array.from(selected))
       }
       const blob = await resp.blob()
       const url = URL.createObjectURL(blob)
@@ -244,7 +249,7 @@ export default function BrowserPage({ session }: { session: Session }) {
           <p style={{ margin: '0 0 24px', color: 'var(--db-ink-soft)', fontSize: 16 }}>Unity Catalog volumes you can access in this workspace.</p>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
             {volumes.map(vol => (
-              <div key={vol.volume} style={{ background: '#fff', border: '1px solid var(--db-line)', borderRadius: 'var(--r-md)', padding: '16px 20px', boxShadow: 'var(--shadow-sm)' }}>
+              <div key={`${vol.uc_catalog}.${vol.uc_schema}.${vol.volume}`} style={{ background: '#fff', border: '1px solid var(--db-line)', borderRadius: 'var(--r-md)', padding: '16px 20px', boxShadow: 'var(--shadow-sm)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
                   <div style={{ width: 40, height: 40, borderRadius: 'var(--r-sm)', background: 'var(--db-oat-light)', border: '1px solid var(--db-line)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
                     <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="var(--db-navy-700)" strokeWidth="1.5">
@@ -254,12 +259,13 @@ export default function BrowserPage({ session }: { session: Session }) {
                   </div>
                   <div>
                     <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--db-navy)' }}>{vol.volume}</div>
+                    <div style={{ fontSize: 11, color: 'var(--db-ink-muted)', fontFamily: 'var(--font-mono)' }}>{vol.uc_catalog}.{vol.uc_schema}</div>
                     <div style={{ fontSize: 12, color: 'var(--db-ink-muted)' }}>{vol.folders.length} folder{vol.folders.length !== 1 ? 's' : ''} granted</div>
                   </div>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {vol.folders.map(f => (
-                    <button key={f.folder} onClick={() => { pickVolume(vol.volume); setTimeout(() => pickFolder(f.folder), 0) }} style={{
+                    <button key={f.folder} onClick={() => { pickVolume(vol); setTimeout(() => pickFolder(f.folder), 0) }} style={{
                       display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                       padding: '8px 12px', borderRadius: 'var(--r-sm)', border: '1px solid var(--db-line)',
                       background: 'var(--db-oat-light)', cursor: 'pointer', textAlign: 'left',

@@ -53,25 +53,30 @@ def require_admin(user: dict = Depends(current_user)) -> dict:
     return user
 
 
-def check_perm(uid: str, workspace_id: str, volume: str, folder: str) -> str:
+def safe(value: str) -> str:
+    # SQL is f-string interpolated; reject single quotes to block injection
+    # via the free-text admin inputs (catalog/schema/volume/folder/names).
+    if value is not None and "'" in value:
+        raise HTTPException(400, "Single quotes are not allowed in this field")
+    return value
+
+
+def check_perm(uid: str, workspace_id: str, uc_catalog: str, uc_schema: str,
+               volume: str, folder: str) -> dict:
     rows = run_sql(f"""
-        SELECT permission FROM {APP_CATALOG}.config.permissions
+        SELECT permission, uc_catalog, uc_schema FROM {APP_CATALOG}.config.permissions
         WHERE user_id = '{uid}' AND workspace_id = '{workspace_id}'
+          AND uc_catalog = '{uc_catalog}' AND uc_schema = '{uc_schema}'
           AND volume = '{volume}' AND folder_path = '{folder}'
     """)
     if not rows:
         raise HTTPException(403, "Access denied")
-    return rows[0]["permission"]
+    return rows[0]
 
 
-def vol_path(workspace_id: str, volume: str, folder: str, filename: str = "") -> str:
-    rows = run_sql(
-        f"SELECT uc_catalog, uc_schema FROM {APP_CATALOG}.config.workspaces "
-        f"WHERE workspace_id = '{workspace_id}'"
-    )
-    if not rows:
-        raise HTTPException(400, f"Unknown workspace: {workspace_id}")
-    return f"/Volumes/{rows[0]['uc_catalog']}/{rows[0]['uc_schema']}/{volume}{folder}{filename}"
+def vol_path(uc_catalog: str, uc_schema: str, volume: str,
+             folder: str, filename: str = "") -> str:
+    return f"/Volumes/{uc_catalog}/{uc_schema}/{volume}{folder}{filename}"
 
 
 # ── auth ─────────────────────────────────────────────────────────────────────
@@ -120,44 +125,49 @@ def get_workspaces(user: dict = Depends(current_user)):
 def get_volumes(workspace_id: str, user: dict = Depends(current_user)):
     uid = user["user_id"]
     rows = run_sql(f"""
-        SELECT volume, folder_path, permission
+        SELECT uc_catalog, uc_schema, volume, folder_path, permission
         FROM {APP_CATALOG}.config.permissions
         WHERE user_id = '{uid}' AND workspace_id = '{workspace_id}'
-        ORDER BY volume, folder_path
+        ORDER BY uc_catalog, uc_schema, volume, folder_path
     """)
-    volumes: dict = {}
+    # group by (catalog, schema, volume) — a volume name can repeat across schemas
+    groups: dict = {}
     for r in rows:
-        v = r["volume"]
-        if v not in volumes:
-            volumes[v] = []
-        volumes[v].append({"folder": r["folder_path"], "permission": r["permission"]})
-    return [{"volume": k, "folders": v} for k, v in volumes.items()]
+        key = (r["uc_catalog"], r["uc_schema"], r["volume"])
+        if key not in groups:
+            groups[key] = []
+        groups[key].append({"folder": r["folder_path"], "permission": r["permission"]})
+    return [
+        {"uc_catalog": cat, "uc_schema": sch, "volume": vol, "folders": folders}
+        for (cat, sch, vol), folders in groups.items()
+    ]
 
 
 # ── files ─────────────────────────────────────────────────────────────────────
 
 @app.get("/api/files")
-def list_files(workspace_id: str, volume: str, folder: str, user: dict = Depends(current_user)):
-    permission = check_perm(user["user_id"], workspace_id, volume, folder)
-    path = vol_path(workspace_id, volume, folder)
+def list_files(workspace_id: str, uc_catalog: str, uc_schema: str, volume: str,
+               folder: str, user: dict = Depends(current_user)):
+    row = check_perm(user["user_id"], workspace_id, uc_catalog, uc_schema, volume, folder)
+    path = vol_path(uc_catalog, uc_schema, volume, folder)
     entries = list(w.files.list_directory_contents(path))
     files = [
         {"name": e.name, "size": e.file_size, "modified": e.last_modified}
         for e in entries
         if not e.is_directory
     ]
-    return {"files": files, "permission": permission}
+    return {"files": files, "permission": row["permission"]}
 
 
 @app.get("/api/download")
 def download_file(
-    workspace_id: str, volume: str, folder: str, filename: str,
-    user: dict = Depends(current_user)
+    workspace_id: str, uc_catalog: str, uc_schema: str, volume: str,
+    folder: str, filename: str, user: dict = Depends(current_user)
 ):
-    perm = check_perm(user["user_id"], workspace_id, volume, folder)
-    if perm != "DOWNLOAD":
+    row = check_perm(user["user_id"], workspace_id, uc_catalog, uc_schema, volume, folder)
+    if row["permission"] != "DOWNLOAD":
         raise HTTPException(403, "READ-only — download not permitted")
-    path = vol_path(workspace_id, volume, folder, filename)
+    path = vol_path(uc_catalog, uc_schema, volume, folder, filename)
     resp = w.files.download(path)
     return StreamingResponse(
         resp.contents,
@@ -168,20 +178,23 @@ def download_file(
 
 class ZipBody(BaseModel):
     workspace_id: str
+    uc_catalog: str
+    uc_schema: str
     volume: str
     folder: str
     filenames: list[str]
 
 @app.post("/api/download-zip")
 def download_zip(body: ZipBody, user: dict = Depends(current_user)):
-    perm = check_perm(user["user_id"], body.workspace_id, body.volume, body.folder)
-    if perm != "DOWNLOAD":
+    row = check_perm(user["user_id"], body.workspace_id, body.uc_catalog,
+                     body.uc_schema, body.volume, body.folder)
+    if row["permission"] != "DOWNLOAD":
         raise HTTPException(403, "READ-only — download not permitted")
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for fname in body.filenames:
-            path = vol_path(body.workspace_id, body.volume, body.folder, fname)
+            path = vol_path(body.uc_catalog, body.uc_schema, body.volume, body.folder, fname)
             data = w.files.download(path)
             zf.writestr(fname, data.contents.read())
     buf.seek(0)
@@ -204,11 +217,13 @@ def admin_list_permissions(user: dict = Depends(require_admin)):
     return run_sql(f"""
         SELECT p.user_id, u.display_name, u.databricks_upn, p.workspace_id,
                w.display_name AS workspace_name,
-               p.volume, p.folder_path, p.permission, p.granted_by, p.granted_at
+               p.uc_catalog, p.uc_schema, p.volume, p.folder_path, p.permission,
+               COALESCE(g.display_name, p.granted_by) AS granted_by, p.granted_at
         FROM {APP_CATALOG}.config.permissions p
         JOIN {APP_CATALOG}.config.users u ON p.user_id = u.user_id
         JOIN {APP_CATALOG}.config.workspaces w ON p.workspace_id = w.workspace_id
-        ORDER BY u.display_name, p.workspace_id, p.volume, p.folder_path
+        LEFT JOIN {APP_CATALOG}.config.users g ON p.granted_by = g.user_id
+        ORDER BY u.display_name, p.workspace_id, p.uc_catalog, p.uc_schema, p.volume, p.folder_path
     """)
 
 
@@ -225,19 +240,89 @@ def admin_list_workspaces(user: dict = Depends(require_admin)):
     return run_sql(f"SELECT * FROM {APP_CATALOG}.config.workspaces ORDER BY display_name")
 
 
+class NewUser(BaseModel):
+    display_name: str
+    databricks_upn: str
+    is_admin: bool = False
+
+@app.post("/api/admin/user")
+def add_user(body: NewUser, user: dict = Depends(require_admin)):
+    name  = safe(body.display_name)
+    email = safe(body.databricks_upn).strip()
+    if not email:
+        raise HTTPException(400, "Email is required")
+    existing = run_sql(f"SELECT user_id FROM {APP_CATALOG}.config.users")
+    existing_ids = {r["user_id"] for r in existing}
+    uid  = email.split("@")[0].replace(".", "_").replace("-", "_")
+    base = uid; n = 1
+    while uid in existing_ids:
+        uid = f"{base}_{n}"; n += 1
+    is_admin = "true" if body.is_admin else "false"
+    run_sql(
+        f"INSERT INTO {APP_CATALOG}.config.users VALUES "
+        f"('{uid}','{name}','{email}',{is_admin})"
+    )
+    return {"ok": True, "user_id": uid}
+
+
+class NewWorkspace(BaseModel):
+    workspace_id: str
+    display_name: str
+    host_url: str
+
+@app.post("/api/admin/workspace")
+def add_workspace(body: NewWorkspace, user: dict = Depends(require_admin)):
+    ws_id = safe(body.workspace_id).strip()
+    name  = safe(body.display_name)
+    host  = safe(body.host_url)
+    if not ws_id:
+        raise HTTPException(400, "Workspace id is required")
+    dupe = run_sql(
+        f"SELECT workspace_id FROM {APP_CATALOG}.config.workspaces "
+        f"WHERE workspace_id = '{ws_id}'"
+    )
+    if dupe:
+        raise HTTPException(400, f"Workspace '{ws_id}' already exists")
+    run_sql(
+        f"INSERT INTO {APP_CATALOG}.config.workspaces VALUES "
+        f"('{ws_id}','{name}','{host}')"
+    )
+    return {"ok": True}
+
+
+class SetAdmin(BaseModel):
+    user_id: str
+    is_admin: bool
+
+@app.put("/api/admin/user/admin")
+def set_admin(body: SetAdmin, user: dict = Depends(require_admin)):
+    uid      = safe(body.user_id)
+    is_admin = "true" if body.is_admin else "false"
+    run_sql(
+        f"UPDATE {APP_CATALOG}.config.users SET is_admin={is_admin} "
+        f"WHERE user_id='{uid}'"
+    )
+    return {"ok": True}
+
+
 class PermRow(BaseModel):
     user_id: str
     workspace_id: str
+    uc_catalog: str
+    uc_schema: str
     volume: str
     folder_path: str
     permission: str
 
 @app.post("/api/admin/permission")
 def add_permission(body: PermRow, user: dict = Depends(require_admin)):
+    for field in (body.uc_catalog, body.uc_schema, body.volume, body.folder_path):
+        safe(field)
+    granter = user["user_id"]
     run_sql(f"""
         INSERT INTO {APP_CATALOG}.config.permissions
-        VALUES ('{body.user_id}','{body.workspace_id}','{body.volume}',
-                '{body.folder_path}','{body.permission}','{user["user_id"]}',current_timestamp())
+        VALUES ('{body.user_id}','{body.workspace_id}','{body.uc_catalog}','{body.uc_schema}',
+                '{body.volume}','{body.folder_path}','{body.permission}','{granter}',current_timestamp())
     """)
     return {"ok": True}
 
@@ -245,16 +330,20 @@ def add_permission(body: PermRow, user: dict = Depends(require_admin)):
 class UpdatePerm(BaseModel):
     user_id: str
     workspace_id: str
+    uc_catalog: str
+    uc_schema: str
     volume: str
     folder_path: str
     permission: str
 
 @app.put("/api/admin/permission")
 def update_permission(body: UpdatePerm, user: dict = Depends(require_admin)):
+    granter = user["user_id"]
     run_sql(f"""
         UPDATE {APP_CATALOG}.config.permissions
-        SET permission='{body.permission}', granted_by='{user["user_id"]}', granted_at=current_timestamp()
+        SET permission='{body.permission}', granted_by='{granter}', granted_at=current_timestamp()
         WHERE user_id='{body.user_id}' AND workspace_id='{body.workspace_id}'
+          AND uc_catalog='{body.uc_catalog}' AND uc_schema='{body.uc_schema}'
           AND volume='{body.volume}' AND folder_path='{body.folder_path}'
     """)
     return {"ok": True}
@@ -263,6 +352,8 @@ def update_permission(body: UpdatePerm, user: dict = Depends(require_admin)):
 class DeletePerm(BaseModel):
     user_id: str
     workspace_id: str
+    uc_catalog: str
+    uc_schema: str
     volume: str
     folder_path: str
 
@@ -271,6 +362,7 @@ def delete_permission(body: DeletePerm, user: dict = Depends(require_admin)):
     run_sql(f"""
         DELETE FROM {APP_CATALOG}.config.permissions
         WHERE user_id='{body.user_id}' AND workspace_id='{body.workspace_id}'
+          AND uc_catalog='{body.uc_catalog}' AND uc_schema='{body.uc_schema}'
           AND volume='{body.volume}' AND folder_path='{body.folder_path}'
     """)
     return {"ok": True}
@@ -280,11 +372,11 @@ def delete_permission(body: DeletePerm, user: dict = Depends(require_admin)):
 
 @app.get("/api/preview")
 def preview_file(
-    workspace_id: str, volume: str, folder: str, filename: str,
-    user: dict = Depends(current_user)
+    workspace_id: str, uc_catalog: str, uc_schema: str, volume: str,
+    folder: str, filename: str, user: dict = Depends(current_user)
 ):
-    check_perm(user["user_id"], workspace_id, volume, folder)
-    path = vol_path(workspace_id, volume, folder, filename)
+    check_perm(user["user_id"], workspace_id, uc_catalog, uc_schema, volume, folder)
+    path = vol_path(uc_catalog, uc_schema, volume, folder, filename)
     resp = w.files.download(path)
     content = resp.contents.read(1_048_576).decode("utf-8", errors="replace")
     return {"content": content, "filename": filename}
@@ -295,6 +387,8 @@ def preview_file(
 class BulkChange(BaseModel):
     user_id: str
     workspace_id: str
+    uc_catalog: str
+    uc_schema: str
     volume: str
     folder_path: str
     permission: Optional[str] = None
@@ -308,15 +402,17 @@ def bulk_permissions(body: BulkBody, user: dict = Depends(require_admin)):
         return {"ok": True, "applied": 0}
     conds = " OR ".join(
         f"(user_id='{c.user_id}' AND workspace_id='{c.workspace_id}'"
+        f" AND uc_catalog='{c.uc_catalog}' AND uc_schema='{c.uc_schema}'"
         f" AND volume='{c.volume}' AND folder_path='{c.folder_path}')"
         for c in body.changes
     )
     run_sql(f"DELETE FROM {APP_CATALOG}.config.permissions WHERE {conds}")
     to_add = [c for c in body.changes if c.permission]
     if to_add:
+        granter = user["user_id"]
         vals = ", ".join(
-            f"('{c.user_id}','{c.workspace_id}','{c.volume}','{c.folder_path}',"
-            f"'{c.permission}','{user['user_id']}',current_timestamp())"
+            f"('{c.user_id}','{c.workspace_id}','{c.uc_catalog}','{c.uc_schema}',"
+            f"'{c.volume}','{c.folder_path}','{c.permission}','{granter}',current_timestamp())"
             for c in to_add
         )
         run_sql(f"INSERT INTO {APP_CATALOG}.config.permissions VALUES {vals}")
@@ -344,10 +440,12 @@ async def import_csv(file: UploadFile = File(...), user: dict = Depends(require_
         email      = (row.get("email") or "").strip()
         name       = (row.get("display_name") or "").strip()
         ws_id      = (row.get("workspace_id") or "").strip()
+        uc_catalog = (row.get("uc_catalog") or "").strip()
+        uc_schema  = (row.get("uc_schema") or "").strip()
         volume     = (row.get("volume") or "").strip()
         folder     = (row.get("folder_path") or "").strip()
         permission = (row.get("permission") or "").strip().upper()
-        if not all([email, ws_id, volume, folder, permission]):
+        if not all([email, ws_id, uc_catalog, uc_schema, volume, folder, permission]):
             continue
         if email not in existing:
             uid  = email.split("@")[0].replace(".", "_").replace("-", "_")
@@ -361,17 +459,18 @@ async def import_csv(file: UploadFile = File(...), user: dict = Depends(require_
             existing[email] = uid
             existing_ids.add(uid)
             users_added += 1
-        perm_rows.append((existing[email], ws_id, volume, folder, permission))
+        perm_rows.append((existing[email], ws_id, uc_catalog, uc_schema, volume, folder, permission))
 
     if perm_rows:
         conds = " OR ".join(
-            f"(user_id='{r[0]}' AND workspace_id='{r[1]}' AND volume='{r[2]}' AND folder_path='{r[3]}')"
+            f"(user_id='{r[0]}' AND workspace_id='{r[1]}' AND uc_catalog='{r[2]}'"
+            f" AND uc_schema='{r[3]}' AND volume='{r[4]}' AND folder_path='{r[5]}')"
             for r in perm_rows
         )
         run_sql(f"DELETE FROM {APP_CATALOG}.config.permissions WHERE {conds}")
         granter = user["user_id"]
         vals = ", ".join(
-            f"('{r[0]}','{r[1]}','{r[2]}','{r[3]}','{r[4]}','{granter}',current_timestamp())"
+            f"('{r[0]}','{r[1]}','{r[2]}','{r[3]}','{r[4]}','{r[5]}','{r[6]}','{granter}',current_timestamp())"
             for r in perm_rows
         )
         run_sql(f"INSERT INTO {APP_CATALOG}.config.permissions VALUES {vals}")
