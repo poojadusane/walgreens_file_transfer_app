@@ -61,17 +61,34 @@ def safe(value: str) -> str:
     return value
 
 
-def check_perm(uid: str, workspace_id: str, uc_catalog: str, uc_schema: str,
-               volume: str, folder: str) -> dict:
+def _covers(scope: str, grant_folder: str, requested_folder: str) -> bool:
+    # Does a grant on `grant_folder` with the given scope cover `requested_folder`?
+    if scope == "VOLUME":
+        return True                                  # whole volume
+    if scope == "FOLDER_TREE":
+        return requested_folder.startswith(grant_folder)  # folder + everything under it
+    return requested_folder == grant_folder          # FOLDER: exact folder only
+
+
+def resolve_perm(uid: str, workspace_id: str, uc_catalog: str, uc_schema: str,
+                 volume: str, folder: str) -> dict:
+    # Find every grant this user has on this volume, then pick one that COVERS
+    # the requested folder. Prefer DOWNLOAD over READ when multiple cover it.
     rows = run_sql(f"""
-        SELECT permission, uc_catalog, uc_schema FROM {APP_CATALOG}.config.permissions
+        SELECT permission, scope, folder_path FROM {APP_CATALOG}.config.permissions
         WHERE user_id = '{uid}' AND workspace_id = '{workspace_id}'
           AND uc_catalog = '{uc_catalog}' AND uc_schema = '{uc_schema}'
-          AND volume = '{volume}' AND folder_path = '{folder}'
+          AND volume = '{volume}'
     """)
-    if not rows:
+    covering = [
+        r for r in rows
+        if _covers((r.get("scope") or "FOLDER"), r["folder_path"], folder)
+    ]
+    if not covering:
         raise HTTPException(403, "Access denied")
-    return rows[0]
+    # most permissive wins
+    best = "DOWNLOAD" if any(r["permission"] == "DOWNLOAD" for r in covering) else "READ"
+    return {"permission": best, "uc_catalog": uc_catalog, "uc_schema": uc_schema}
 
 
 def vol_path(uc_catalog: str, uc_schema: str, volume: str,
@@ -125,7 +142,7 @@ def get_workspaces(user: dict = Depends(current_user)):
 def get_volumes(workspace_id: str, user: dict = Depends(current_user)):
     uid = user["user_id"]
     rows = run_sql(f"""
-        SELECT uc_catalog, uc_schema, volume, folder_path, permission
+        SELECT uc_catalog, uc_schema, volume, folder_path, permission, scope
         FROM {APP_CATALOG}.config.permissions
         WHERE user_id = '{uid}' AND workspace_id = '{workspace_id}'
         ORDER BY uc_catalog, uc_schema, volume, folder_path
@@ -136,11 +153,37 @@ def get_volumes(workspace_id: str, user: dict = Depends(current_user)):
         key = (r["uc_catalog"], r["uc_schema"], r["volume"])
         if key not in groups:
             groups[key] = []
-        groups[key].append({"folder": r["folder_path"], "permission": r["permission"]})
+        groups[key].append({
+            "folder": r["folder_path"],
+            "permission": r["permission"],
+            "scope": r.get("scope") or "FOLDER",
+        })
     return [
         {"uc_catalog": cat, "uc_schema": sch, "volume": vol, "folders": folders}
         for (cat, sch, vol), folders in groups.items()
     ]
+
+
+# ── browse (subfolder discovery for VOLUME / FOLDER_TREE scopes) ────────────────
+
+@app.get("/api/browse")
+def browse(workspace_id: str, uc_catalog: str, uc_schema: str, volume: str,
+           folder: str, user: dict = Depends(current_user)):
+    # Lists both subdirectories and files at `folder`, so the UI can navigate a
+    # granted tree. resolve_perm enforces the scope covers this exact path.
+    row = resolve_perm(user["user_id"], workspace_id, uc_catalog, uc_schema, volume, folder)
+    path = vol_path(uc_catalog, uc_schema, volume, folder)
+    entries = list(w.files.list_directory_contents(path))
+    dirs = [
+        {"name": e.name.rstrip("/"),
+         "path": folder + e.name.rstrip("/") + "/"}
+        for e in entries if e.is_directory
+    ]
+    files = [
+        {"name": e.name, "size": e.file_size, "modified": e.last_modified}
+        for e in entries if not e.is_directory
+    ]
+    return {"dirs": dirs, "files": files, "permission": row["permission"]}
 
 
 # ── files ─────────────────────────────────────────────────────────────────────
@@ -148,7 +191,7 @@ def get_volumes(workspace_id: str, user: dict = Depends(current_user)):
 @app.get("/api/files")
 def list_files(workspace_id: str, uc_catalog: str, uc_schema: str, volume: str,
                folder: str, user: dict = Depends(current_user)):
-    row = check_perm(user["user_id"], workspace_id, uc_catalog, uc_schema, volume, folder)
+    row = resolve_perm(user["user_id"], workspace_id, uc_catalog, uc_schema, volume, folder)
     path = vol_path(uc_catalog, uc_schema, volume, folder)
     entries = list(w.files.list_directory_contents(path))
     files = [
@@ -164,7 +207,7 @@ def download_file(
     workspace_id: str, uc_catalog: str, uc_schema: str, volume: str,
     folder: str, filename: str, user: dict = Depends(current_user)
 ):
-    row = check_perm(user["user_id"], workspace_id, uc_catalog, uc_schema, volume, folder)
+    row = resolve_perm(user["user_id"], workspace_id, uc_catalog, uc_schema, volume, folder)
     if row["permission"] != "DOWNLOAD":
         raise HTTPException(403, "READ-only — download not permitted")
     path = vol_path(uc_catalog, uc_schema, volume, folder, filename)
@@ -186,7 +229,7 @@ class ZipBody(BaseModel):
 
 @app.post("/api/download-zip")
 def download_zip(body: ZipBody, user: dict = Depends(current_user)):
-    row = check_perm(user["user_id"], body.workspace_id, body.uc_catalog,
+    row = resolve_perm(user["user_id"], body.workspace_id, body.uc_catalog,
                      body.uc_schema, body.volume, body.folder)
     if row["permission"] != "DOWNLOAD":
         raise HTTPException(403, "READ-only — download not permitted")
@@ -217,7 +260,7 @@ def admin_list_permissions(user: dict = Depends(require_admin)):
     return run_sql(f"""
         SELECT p.user_id, u.display_name, u.databricks_upn, p.workspace_id,
                w.display_name AS workspace_name,
-               p.uc_catalog, p.uc_schema, p.volume, p.folder_path, p.permission,
+               p.uc_catalog, p.uc_schema, p.volume, p.folder_path, p.permission, p.scope,
                COALESCE(g.display_name, p.granted_by) AS granted_by, p.granted_at
         FROM {APP_CATALOG}.config.permissions p
         JOIN {APP_CATALOG}.config.users u ON p.user_id = u.user_id
@@ -305,6 +348,15 @@ def set_admin(body: SetAdmin, user: dict = Depends(require_admin)):
     return {"ok": True}
 
 
+VALID_SCOPES = ("VOLUME", "FOLDER_TREE", "FOLDER")
+
+def _is_admin_user(user_id: str) -> bool:
+    rows = run_sql(
+        f"SELECT is_admin FROM {APP_CATALOG}.config.users WHERE user_id = '{user_id}'"
+    )
+    return bool(rows) and str(rows[0]["is_admin"]).lower() == "true"
+
+
 class PermRow(BaseModel):
     user_id: str
     workspace_id: str
@@ -313,16 +365,23 @@ class PermRow(BaseModel):
     volume: str
     folder_path: str
     permission: str
+    scope: str = "FOLDER"
 
 @app.post("/api/admin/permission")
 def add_permission(body: PermRow, user: dict = Depends(require_admin)):
     for field in (body.uc_catalog, body.uc_schema, body.volume, body.folder_path):
         safe(field)
+    scope = (body.scope or "FOLDER").upper()
+    if scope not in VALID_SCOPES:
+        raise HTTPException(400, f"Invalid scope: {body.scope}")
+    # VOLUME scope is admin-only — enforced on the backend, not just the UI.
+    if scope == "VOLUME" and not _is_admin_user(body.user_id):
+        raise HTTPException(403, "Whole-volume access can only be granted to admins")
     granter = user["user_id"]
     run_sql(f"""
         INSERT INTO {APP_CATALOG}.config.permissions
         VALUES ('{body.user_id}','{body.workspace_id}','{body.uc_catalog}','{body.uc_schema}',
-                '{body.volume}','{body.folder_path}','{body.permission}','{granter}',current_timestamp())
+                '{body.volume}','{body.folder_path}','{body.permission}','{granter}',current_timestamp(),'{scope}')
     """)
     return {"ok": True}
 
@@ -335,13 +394,19 @@ class UpdatePerm(BaseModel):
     volume: str
     folder_path: str
     permission: str
+    scope: str = "FOLDER"
 
 @app.put("/api/admin/permission")
 def update_permission(body: UpdatePerm, user: dict = Depends(require_admin)):
+    scope = (body.scope or "FOLDER").upper()
+    if scope not in VALID_SCOPES:
+        raise HTTPException(400, f"Invalid scope: {body.scope}")
+    if scope == "VOLUME" and not _is_admin_user(body.user_id):
+        raise HTTPException(403, "Whole-volume access can only be granted to admins")
     granter = user["user_id"]
     run_sql(f"""
         UPDATE {APP_CATALOG}.config.permissions
-        SET permission='{body.permission}', granted_by='{granter}', granted_at=current_timestamp()
+        SET permission='{body.permission}', scope='{scope}', granted_by='{granter}', granted_at=current_timestamp()
         WHERE user_id='{body.user_id}' AND workspace_id='{body.workspace_id}'
           AND uc_catalog='{body.uc_catalog}' AND uc_schema='{body.uc_schema}'
           AND volume='{body.volume}' AND folder_path='{body.folder_path}'
@@ -375,7 +440,7 @@ def preview_file(
     workspace_id: str, uc_catalog: str, uc_schema: str, volume: str,
     folder: str, filename: str, user: dict = Depends(current_user)
 ):
-    check_perm(user["user_id"], workspace_id, uc_catalog, uc_schema, volume, folder)
+    resolve_perm(user["user_id"], workspace_id, uc_catalog, uc_schema, volume, folder)
     path = vol_path(uc_catalog, uc_schema, volume, folder, filename)
     resp = w.files.download(path)
     content = resp.contents.read(1_048_576).decode("utf-8", errors="replace")
@@ -412,7 +477,7 @@ def bulk_permissions(body: BulkBody, user: dict = Depends(require_admin)):
         granter = user["user_id"]
         vals = ", ".join(
             f"('{c.user_id}','{c.workspace_id}','{c.uc_catalog}','{c.uc_schema}',"
-            f"'{c.volume}','{c.folder_path}','{c.permission}','{granter}',current_timestamp())"
+            f"'{c.volume}','{c.folder_path}','{c.permission}','{granter}',current_timestamp(),'FOLDER')"
             for c in to_add
         )
         run_sql(f"INSERT INTO {APP_CATALOG}.config.permissions VALUES {vals}")
@@ -445,6 +510,9 @@ async def import_csv(file: UploadFile = File(...), user: dict = Depends(require_
         volume     = (row.get("volume") or "").strip()
         folder     = (row.get("folder_path") or "").strip()
         permission = (row.get("permission") or "").strip().upper()
+        scope      = (row.get("scope") or "FOLDER").strip().upper() or "FOLDER"
+        if scope not in VALID_SCOPES:
+            scope = "FOLDER"
         if not all([email, ws_id, uc_catalog, uc_schema, volume, folder, permission]):
             continue
         if email not in existing:
@@ -459,7 +527,7 @@ async def import_csv(file: UploadFile = File(...), user: dict = Depends(require_
             existing[email] = uid
             existing_ids.add(uid)
             users_added += 1
-        perm_rows.append((existing[email], ws_id, uc_catalog, uc_schema, volume, folder, permission))
+        perm_rows.append((existing[email], ws_id, uc_catalog, uc_schema, volume, folder, permission, scope))
 
     if perm_rows:
         conds = " OR ".join(
@@ -470,7 +538,7 @@ async def import_csv(file: UploadFile = File(...), user: dict = Depends(require_
         run_sql(f"DELETE FROM {APP_CATALOG}.config.permissions WHERE {conds}")
         granter = user["user_id"]
         vals = ", ".join(
-            f"('{r[0]}','{r[1]}','{r[2]}','{r[3]}','{r[4]}','{r[5]}','{r[6]}','{granter}',current_timestamp())"
+            f"('{r[0]}','{r[1]}','{r[2]}','{r[3]}','{r[4]}','{r[5]}','{r[6]}','{granter}',current_timestamp(),'{r[7]}')"
             for r in perm_rows
         )
         run_sql(f"INSERT INTO {APP_CATALOG}.config.permissions VALUES {vals}")

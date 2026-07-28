@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, Permission, AdminUser, Workspace, PermBody } from '../api'
+import { api, Permission, AdminUser, Workspace, PermBody, Scope } from '../api'
 import { Session } from '../App'
 
 const LvlBadge = ({ level }: { level: string }) => (
@@ -147,7 +147,13 @@ const fieldLabel = {
   marginBottom: 5, textTransform: 'uppercase' as const, letterSpacing: '.04em',
 }
 
-const emptyPerm: PermBody = { user_id: '', workspace_id: '', uc_catalog: '', uc_schema: '', volume: '', folder_path: '', permission: 'READ' }
+const emptyPerm: PermBody = { user_id: '', workspace_id: '', uc_catalog: '', uc_schema: '', volume: '', folder_path: '', permission: 'READ', scope: 'FOLDER' }
+
+const SCOPE_LABEL: Record<Scope, string> = {
+  VOLUME: 'Whole volume (admin only)',
+  FOLDER_TREE: 'Folder + everything under it',
+  FOLDER: 'This folder only',
+}
 
 export default function AdminPage({ session: _session }: { session: Session }) {
   const [perms, setPerms]           = useState<Permission[]>([])
@@ -196,7 +202,11 @@ export default function AdminPage({ session: _session }: { session: Session }) {
 
   async function handleAdd() {
     try {
-      await api.adminAddPermission(newPerm)
+      // VOLUME scope ignores the folder; store '/' as a canonical root.
+      const body = newPerm.scope === 'VOLUME'
+        ? { ...newPerm, folder_path: '/' }
+        : newPerm
+      await api.adminAddPermission(body)
       setShowAdd(false)
       setNewPerm({ ...emptyPerm })
       load()
@@ -233,7 +243,8 @@ export default function AdminPage({ session: _session }: { session: Session }) {
       await api.adminUpdatePermission({
         user_id: p.user_id, workspace_id: p.workspace_id,
         uc_catalog: p.uc_catalog, uc_schema: p.uc_schema,
-        volume: p.volume, folder_path: p.folder_path, permission: editRow!.permission,
+        volume: p.volume, folder_path: p.folder_path,
+        permission: editRow!.permission, scope: p.scope,
       })
       setEditRow(null); load()
     } catch (e: any) { setError(e.message) }
@@ -416,15 +427,31 @@ export default function AdminPage({ session: _session }: { session: Session }) {
                 <option value="DOWNLOAD">DOWNLOAD</option>
               </select>
             </div>
+            <div>
+              <label style={fieldLabel}>Scope</label>
+              <select value={newPerm.scope} style={selectStyle}
+                onChange={e => setNewPerm({ ...newPerm, scope: e.target.value as Scope })}>
+                <option value="FOLDER">{SCOPE_LABEL.FOLDER}</option>
+                <option value="FOLDER_TREE">{SCOPE_LABEL.FOLDER_TREE}</option>
+                {/* VOLUME only offered when the selected user is an admin */}
+                {users.find(u => u.user_id === newPerm.user_id)?.is_admin && (
+                  <option value="VOLUME">{SCOPE_LABEL.VOLUME}</option>
+                )}
+              </select>
+            </div>
           </div>
           <p style={{ margin: '10px 0 0', fontSize: 12, color: 'var(--db-ink-muted)' }}>
-            Folder must include leading and trailing slashes, e.g. <code>/idh-test/</code>. Volume path resolves to
-            <code> /Volumes/{newPerm.uc_catalog || 'catalog'}/{newPerm.uc_schema || 'schema'}/{newPerm.volume || 'volume'}{newPerm.folder_path || '/folder/'}</code>
+            {newPerm.scope === 'VOLUME'
+              ? <>Whole-volume access — the folder is ignored; the user can browse and download everything in <code>{newPerm.volume || 'the volume'}</code>. Admins only.</>
+              : newPerm.scope === 'FOLDER_TREE'
+              ? <>Grants <code>{newPerm.folder_path || '/folder/'}</code> and every subfolder beneath it. Use leading + trailing slashes.</>
+              : <>Grants only the files directly in <code>{newPerm.folder_path || '/folder/'}</code>. Use leading + trailing slashes.</>
+            }
           </p>
           <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
             <button onClick={handleAdd}
-              disabled={!newPerm.user_id || !newPerm.workspace_id || !newPerm.uc_catalog || !newPerm.uc_schema || !newPerm.volume || !newPerm.folder_path}
-              style={{ fontWeight: 700, fontSize: 13, padding: '8px 16px', borderRadius: 'var(--r-sm)', background: (newPerm.uc_catalog && newPerm.uc_schema && newPerm.volume && newPerm.folder_path) ? 'var(--db-navy)' : 'var(--db-gray-300)', color: '#fff' }}>
+              disabled={!newPerm.user_id || !newPerm.workspace_id || !newPerm.uc_catalog || !newPerm.uc_schema || !newPerm.volume || (newPerm.scope !== 'VOLUME' && !newPerm.folder_path)}
+              style={{ fontWeight: 700, fontSize: 13, padding: '8px 16px', borderRadius: 'var(--r-sm)', background: (newPerm.uc_catalog && newPerm.uc_schema && newPerm.volume && (newPerm.scope === 'VOLUME' || newPerm.folder_path)) ? 'var(--db-navy)' : 'var(--db-gray-300)', color: '#fff' }}>
               ✓ Save
             </button>
             <button onClick={() => setShowAdd(false)} style={{ fontSize: 13, padding: '8px 16px', borderRadius: 'var(--r-sm)', color: 'var(--db-ink-soft)', border: '1px solid var(--db-line)' }}>Cancel</button>
@@ -479,7 +506,7 @@ export default function AdminPage({ session: _session }: { session: Session }) {
         <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff', borderRadius: 'var(--r-md)', border: '1px solid var(--db-line)', boxShadow: 'var(--shadow-sm)', overflow: 'hidden' }}>
           <thead>
             <tr>
-              {['User', 'Email', 'Workspace', 'Catalog', 'Schema', 'Volume', 'Folder', 'Permission', 'Granted By', ''].map((h, i) => (
+              {['User', 'Email', 'Workspace', 'Catalog', 'Schema', 'Volume', 'Folder', 'Permission', 'Scope', 'Granted By', ''].map((h, i) => (
                 <th key={i} style={{ textAlign: 'left', padding: '11px 14px', fontSize: 11, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: '#fff', background: 'var(--db-navy)', whiteSpace: 'nowrap' }}>{h}</th>
               ))}
             </tr>
@@ -508,6 +535,16 @@ export default function AdminPage({ session: _session }: { session: Session }) {
                       <LvlBadge level={p.permission} />
                     )}
                   </td>
+                  <td style={{ padding: '10px 14px' }}>
+                    <span style={{
+                      fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 'var(--r-pill)',
+                      background: p.scope === 'VOLUME' ? '#FDE8D4' : p.scope === 'FOLDER_TREE' ? '#E4ECFB' : '#EEEDE9',
+                      color: p.scope === 'VOLUME' ? '#9A5B12' : p.scope === 'FOLDER_TREE' ? '#2C4C86' : 'var(--db-ink-muted)',
+                      whiteSpace: 'nowrap',
+                    }}>
+                      {p.scope === 'VOLUME' ? 'Volume' : p.scope === 'FOLDER_TREE' ? 'Folder+sub' : 'Folder'}
+                    </span>
+                  </td>
                   <td style={{ padding: '10px 14px', color: 'var(--db-ink-muted)', fontSize: 12 }}>{p.granted_by}</td>
                   <td style={{ padding: '10px 14px' }}>
                     <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
@@ -532,7 +569,7 @@ export default function AdminPage({ session: _session }: { session: Session }) {
               )
             })}
             {filtered.length === 0 && (
-              <tr><td colSpan={10} style={{ padding: '48px', textAlign: 'center', color: 'var(--db-ink-muted)' }}>
+              <tr><td colSpan={11} style={{ padding: '48px', textAlign: 'center', color: 'var(--db-ink-muted)' }}>
                 {anyFilter ? 'No permissions match the selected filters.' : 'No permissions configured.'}
               </td></tr>
             )}

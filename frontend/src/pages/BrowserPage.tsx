@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, Workspace, VolumeGroup, FileEntry } from '../api'
+import { api, Workspace, VolumeGroup, FileEntry, DirEntry, Scope } from '../api'
 import { Session } from '../App'
 
 type View = 'workspaces' | 'volumes' | 'files'
@@ -50,7 +50,10 @@ export default function BrowserPage({ session }: { session: Session }) {
   const [activeCat, setActiveCat] = useState('')
   const [activeSch, setActiveSch] = useState('')
   const [activeFolder, setActiveFolder] = useState('')
+  const [activeScope, setActiveScope] = useState<Scope>('FOLDER')
+  const [rootFolder, setRootFolder] = useState('')   // the granted folder we entered at
   const [files, setFiles] = useState<FileEntry[]>([])
+  const [dirs, setDirs] = useState<DirEntry[]>([])
   const [permission, setPermission] = useState<'READ' | 'DOWNLOAD'>('READ')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(false)
@@ -79,19 +82,25 @@ export default function BrowserPage({ session }: { session: Session }) {
     }).catch(e => setError(e.message))
   }, [activeWs])
 
-  // load files when folder selected
+  // load contents when folder selected.
+  // FOLDER scope → flat file list. FOLDER_TREE / VOLUME → browse (dirs + files),
+  // so the user can navigate into discovered subfolders.
   useEffect(() => {
     if (!activeWs || !activeCat || !activeSch || !activeVol || !activeFolder) return
     setLoading(true)
     setFiles([])
+    setDirs([])
     setSelected(new Set())
     setPreview(null)
     setError('')
-    api.listFiles(activeWs, activeCat, activeSch, activeVol, activeFolder)
-      .then(resp => { setFiles(resp.files); setPermission(resp.permission) })
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false))
-  }, [activeWs, activeCat, activeSch, activeVol, activeFolder])
+    const navigable = activeScope === 'VOLUME' || activeScope === 'FOLDER_TREE'
+    const p = navigable
+      ? api.browse(activeWs, activeCat, activeSch, activeVol, activeFolder)
+          .then(resp => { setFiles(resp.files); setDirs(resp.dirs); setPermission(resp.permission) })
+      : api.listFiles(activeWs, activeCat, activeSch, activeVol, activeFolder)
+          .then(resp => { setFiles(resp.files); setDirs([]); setPermission(resp.permission) })
+    p.catch(e => setError(e.message)).finally(() => setLoading(false))
+  }, [activeWs, activeCat, activeSch, activeVol, activeFolder, activeScope])
 
   async function openPreview(filename: string) {
     setPreviewLoading(true)
@@ -109,17 +118,38 @@ export default function BrowserPage({ session }: { session: Session }) {
     setView('volumes')
   }
 
-  function pickVolume(vol: VolumeGroup) {
+  // Enter a specific granted folder. For VOLUME scope the granted folder is the
+  // volume root ('/'); for FOLDER_TREE we start at the granted folder and can go
+  // deeper; for FOLDER we just show that folder's files.
+  function enterGrant(vol: VolumeGroup, folder: string, scope: Scope) {
     setActiveCat(vol.uc_catalog)
     setActiveSch(vol.uc_schema)
     setActiveVol(vol.volume)
+    setActiveScope(scope)
+    const start = scope === 'VOLUME' ? '/' : folder
+    setRootFolder(start)
+    setActiveFolder(start)
     setView('files')
-    if (vol.folders.length) setActiveFolder(vol.folders[0].folder)
   }
 
   function pickFolder(folder: string) {
     setActiveFolder(folder)
   }
+
+  // navigate into a discovered subfolder (tree/volume scopes only)
+  function enterDir(path: string) {
+    setActiveFolder(path)
+  }
+
+  // go up one level, but never above the granted root
+  function goUpFolder() {
+    if (activeFolder === rootFolder) return
+    const trimmed = activeFolder.replace(/\/$/, '')
+    const parent = trimmed.slice(0, trimmed.lastIndexOf('/') + 1)
+    setActiveFolder(parent.length >= rootFolder.length ? parent : rootFolder)
+  }
+
+  const canNavigate = activeScope === 'VOLUME' || activeScope === 'FOLDER_TREE'
 
   function goTo(v: View, ws = '', vol = '', folder = '') {
     if (v === 'workspaces') { setActiveWs(''); setActiveVol(''); setActiveCat(''); setActiveSch(''); setActiveFolder(''); }
@@ -130,8 +160,8 @@ export default function BrowserPage({ session }: { session: Session }) {
 
   const activeWsData = workspaces.find(w => w.workspace_id === activeWs)
   const activeVolData = volumes.find(v => v.volume === activeVol && v.uc_catalog === activeCat && v.uc_schema === activeSch)
-  const activeFolderPerm = activeVolData?.folders.find(f => f.folder === activeFolder)?.permission ?? 'READ'
-  const isDownload = activeFolderPerm === 'DOWNLOAD'
+  // permission comes from the server response for the current folder (authoritative)
+  const isDownload = permission === 'DOWNLOAD'
 
   async function handleDownload(filename?: string) {
     setDownloading(true)
@@ -265,7 +295,7 @@ export default function BrowserPage({ session }: { session: Session }) {
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {vol.folders.map(f => (
-                    <button key={f.folder} onClick={() => { pickVolume(vol); setTimeout(() => pickFolder(f.folder), 0) }} style={{
+                    <button key={`${f.scope}:${f.folder}`} onClick={() => enterGrant(vol, f.folder, f.scope)} style={{
                       display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                       padding: '8px 12px', borderRadius: 'var(--r-sm)', border: '1px solid var(--db-line)',
                       background: 'var(--db-oat-light)', cursor: 'pointer', textAlign: 'left',
@@ -275,7 +305,10 @@ export default function BrowserPage({ session }: { session: Session }) {
                         <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke={f.permission === 'DOWNLOAD' ? 'var(--db-green-700)' : 'var(--db-slate)'} strokeWidth="1.5">
                           <path d="M1 4.5A1.5 1.5 0 0 1 2.5 3h2l1.5 2H12a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1z"/>
                         </svg>
-                        <span style={{ fontSize: 13, fontFamily: 'var(--font-mono)', color: 'var(--db-ink)' }}>{f.folder}</span>
+                        <span style={{ fontSize: 13, fontFamily: 'var(--font-mono)', color: 'var(--db-ink)' }}>
+                          {f.scope === 'VOLUME' ? '(entire volume)' : f.folder}
+                        </span>
+                        {f.scope === 'FOLDER_TREE' && <span style={{ fontSize: 10, color: 'var(--db-ink-muted)' }}>+ subfolders</span>}
                       </span>
                       <LvlBadge level={f.permission} />
                     </button>
@@ -294,23 +327,43 @@ export default function BrowserPage({ session }: { session: Session }) {
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                 <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, color: 'var(--db-navy)', letterSpacing: '-0.01em' }}>{activeVol}</h1>
+                <LvlBadge level={permission} />
               </div>
-              {/* folder tabs */}
-              <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
-                {activeVolData.folders.map(f => (
-                  <button key={f.folder} onClick={() => pickFolder(f.folder)} style={{
-                    display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px',
-                    borderRadius: 'var(--r-sm)', fontSize: 13, fontFamily: 'var(--font-mono)',
-                    border: `1px solid ${activeFolder === f.folder ? 'var(--db-navy-700)' : 'var(--db-line)'}`,
-                    background: activeFolder === f.folder ? 'var(--db-navy)' : '#fff',
-                    color: activeFolder === f.folder ? '#fff' : 'var(--db-ink)',
-                    cursor: 'pointer',
-                  }}>
-                    {f.folder}
-                    <LvlBadge level={f.permission} />
-                  </button>
-                ))}
-              </div>
+              {canNavigate ? (
+                /* current path + up button for navigable (tree / volume) grants */
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
+                  {activeFolder !== rootFolder && (
+                    <button onClick={goUpFolder} style={{
+                      display: 'flex', alignItems: 'center', gap: 4, padding: '5px 10px',
+                      borderRadius: 'var(--r-sm)', fontSize: 12, border: '1px solid var(--db-line)',
+                      background: '#fff', color: 'var(--db-ink-soft)', cursor: 'pointer',
+                    }}>
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M7 2L3 6l4 4"/></svg>
+                      Up
+                    </button>
+                  )}
+                  <span style={{ fontSize: 13, fontFamily: 'var(--font-mono)', color: 'var(--db-ink-soft)' }}>
+                    {activeScope === 'VOLUME' ? `/Volumes/${activeCat}/${activeSch}/${activeVol}` : ''}{activeFolder}
+                  </span>
+                </div>
+              ) : (
+                /* single-folder tabs for FOLDER-scope grants in this volume */
+                <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
+                  {activeVolData.folders.filter(f => f.scope === 'FOLDER').map(f => (
+                    <button key={f.folder} onClick={() => pickFolder(f.folder)} style={{
+                      display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px',
+                      borderRadius: 'var(--r-sm)', fontSize: 13, fontFamily: 'var(--font-mono)',
+                      border: `1px solid ${activeFolder === f.folder ? 'var(--db-navy-700)' : 'var(--db-line)'}`,
+                      background: activeFolder === f.folder ? 'var(--db-navy)' : '#fff',
+                      color: activeFolder === f.folder ? '#fff' : 'var(--db-ink)',
+                      cursor: 'pointer',
+                    }}>
+                      {f.folder}
+                      <LvlBadge level={f.permission} />
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
@@ -346,8 +399,28 @@ export default function BrowserPage({ session }: { session: Session }) {
             </div>
           )}
 
+          {/* subfolders (navigable grants only) */}
+          {canNavigate && dirs.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+              {dirs.map(d => (
+                <button key={d.path} onClick={() => enterDir(d.path)} style={{
+                  display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px',
+                  borderRadius: 'var(--r-sm)', border: '1px solid var(--db-line)', background: '#fff',
+                  cursor: 'pointer', fontSize: 13,
+                }}>
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--db-gold, #C79A3A)" strokeWidth="1.5">
+                    <path d="M1.5 4.5A1.5 1.5 0 0 1 3 3h3l1.5 2H13a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H2.5A1 1 0 0 1 1.5 12z"/>
+                  </svg>
+                  <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--db-navy)' }}>{d.name}/</span>
+                </button>
+              ))}
+            </div>
+          )}
+
           {loading ? (
             <div style={{ textAlign: 'center', padding: '48px', color: 'var(--db-ink-muted)' }}>Loading files…</div>
+          ) : files.length === 0 && dirs.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '48px', color: 'var(--db-ink-muted)', background: '#fff', border: '1px solid var(--db-line)', borderRadius: 'var(--r-md)' }}>This folder is empty.</div>
           ) : (
             <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff', borderRadius: 'var(--r-md)', border: '1px solid var(--db-line)', boxShadow: 'var(--shadow-sm)', overflow: 'hidden' }}>
               <thead>

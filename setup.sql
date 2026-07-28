@@ -49,9 +49,11 @@ CREATE TABLE <APP_CATALOG>.config.permissions (
   uc_schema    STRING,
   volume       STRING,
   folder_path  STRING,
-  permission   STRING,
+  permission   STRING,      -- 'READ' or 'DOWNLOAD'
   granted_by   STRING,
-  granted_at   TIMESTAMP
+  granted_at   TIMESTAMP,
+  scope        STRING       -- 'VOLUME' (admin only, whole volume) | 'FOLDER_TREE'
+                            -- (folder + everything under it) | 'FOLDER' (just this folder's files)
 );
 
 -- ── FIRST ADMIN (required) ──────────────────────────────────────────────────
