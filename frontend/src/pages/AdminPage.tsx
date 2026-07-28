@@ -2,6 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { api, Permission, AdminUser, Workspace, PermBody, Scope } from '../api'
 import { Session } from '../App'
 
+// is_admin comes back from the SQL warehouse as the STRING "true"/"false".
+// A plain !! test treats "false" as truthy — normalize it here.
+const isAdmin = (u?: { is_admin: unknown }): boolean =>
+  !!u && String(u.is_admin).toLowerCase() === 'true'
+
 const LvlBadge = ({ level }: { level: string }) => (
   <span style={{
     fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700, padding: '2px 8px',
@@ -233,7 +238,7 @@ export default function AdminPage({ session: _session }: { session: Session }) {
 
   async function toggleAdmin(u: AdminUser) {
     try {
-      await api.adminSetAdmin({ user_id: u.user_id, is_admin: !u.is_admin })
+      await api.adminSetAdmin({ user_id: u.user_id, is_admin: !isAdmin(u) })
       load()
     } catch (e: any) { setError(e.message) }
   }
@@ -434,7 +439,7 @@ export default function AdminPage({ session: _session }: { session: Session }) {
                 <option value="FOLDER">{SCOPE_LABEL.FOLDER}</option>
                 <option value="FOLDER_TREE">{SCOPE_LABEL.FOLDER_TREE}</option>
                 {/* VOLUME only offered when the selected user is an admin */}
-                {users.find(u => u.user_id === newPerm.user_id)?.is_admin && (
+                {isAdmin(users.find(u => u.user_id === newPerm.user_id)) && (
                   <option value="VOLUME">{SCOPE_LABEL.VOLUME}</option>
                 )}
               </select>
@@ -471,7 +476,7 @@ export default function AdminPage({ session: _session }: { session: Session }) {
                 <span style={{ fontWeight: 600, color: 'var(--db-navy)', minWidth: 160 }}>{u.display_name}</span>
                 <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--db-ink-soft)', flex: 1 }}>{u.databricks_upn}</span>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--db-ink-soft)' }}>
-                  <input type="checkbox" checked={!!u.is_admin} onChange={() => toggleAdmin(u)} />
+                  <input type="checkbox" checked={isAdmin(u)} onChange={() => toggleAdmin(u)} />
                   Admin
                 </label>
               </div>

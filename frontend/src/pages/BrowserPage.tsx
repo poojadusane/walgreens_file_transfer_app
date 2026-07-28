@@ -41,7 +41,7 @@ function fmtSize(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
-export default function BrowserPage({ session }: { session: Session }) {
+export default function BrowserPage({ session: _session }: { session: Session }) {
   const [view, setView] = useState<View>('workspaces')
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [activeWs, setActiveWs] = useState('')
@@ -151,7 +151,7 @@ export default function BrowserPage({ session }: { session: Session }) {
 
   const canNavigate = activeScope === 'VOLUME' || activeScope === 'FOLDER_TREE'
 
-  function goTo(v: View, ws = '', vol = '', folder = '') {
+  function goTo(v: View, folder = '') {
     if (v === 'workspaces') { setActiveWs(''); setActiveVol(''); setActiveCat(''); setActiveSch(''); setActiveFolder(''); }
     if (v === 'volumes') { setActiveVol(''); setActiveCat(''); setActiveSch(''); setActiveFolder(''); }
     if (v === 'files') setActiveFolder(folder)
@@ -301,16 +301,16 @@ export default function BrowserPage({ session }: { session: Session }) {
                       background: 'var(--db-oat-light)', cursor: 'pointer', textAlign: 'left',
                       transition: 'border-color .15s',
                     }}>
-                      <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke={f.permission === 'DOWNLOAD' ? 'var(--db-green-700)' : 'var(--db-slate)'} strokeWidth="1.5">
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke={f.permission === 'DOWNLOAD' ? 'var(--db-green-700)' : 'var(--db-slate)'} strokeWidth="1.5" style={{ flexShrink: 0 }}>
                           <path d="M1 4.5A1.5 1.5 0 0 1 2.5 3h2l1.5 2H12a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1z"/>
                         </svg>
-                        <span style={{ fontSize: 13, fontFamily: 'var(--font-mono)', color: 'var(--db-ink)' }}>
+                        <span title={f.scope === 'VOLUME' ? '(entire volume)' : f.folder} style={{ fontSize: 13, fontFamily: 'var(--font-mono)', color: 'var(--db-ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {f.scope === 'VOLUME' ? '(entire volume)' : f.folder}
                         </span>
-                        {f.scope === 'FOLDER_TREE' && <span style={{ fontSize: 10, color: 'var(--db-ink-muted)' }}>+ subfolders</span>}
+                        {f.scope === 'FOLDER_TREE' && <span style={{ fontSize: 10, color: 'var(--db-ink-muted)', flexShrink: 0 }}>+ sub</span>}
                       </span>
-                      <LvlBadge level={f.permission} />
+                      <span style={{ flexShrink: 0 }}><LvlBadge level={f.permission} /></span>
                     </button>
                   ))}
                 </div>
