@@ -36,14 +36,19 @@ CREATE TABLE <APP_CATALOG>.<APP_SCHEMA>.users (
 );
 
 -- ── permissions ───────────────────────────────────────────────────────────────
--- One row per (user, workspace, catalog, schema, volume, folder) grant.
--- uc_catalog / uc_schema pin down exactly where the volume lives, so a single
--- workspace can span multiple catalogs and schemas.
--- COLUMN ORDER IS LOAD-BEARING: the app inserts positionally in this exact order.
--- permission is 'READ' (view only) or 'DOWNLOAD' (can download files).
+-- One row per (principal, workspace, catalog, schema, volume, folder) grant.
+-- A grant can be to a USER or to an AD GROUP:
+--   principal_type = 'USER'  -> principal_id is the users.user_id
+--   principal_type = 'GROUP' -> principal_id is the AD group display name
+-- At login the app resolves the caller's own group memberships and matches any
+-- grant whose principal is the user OR one of their groups.
+-- uc_catalog / uc_schema pin down where the volume lives (one workspace can span
+-- multiple catalogs/schemas). COLUMN ORDER IS LOAD-BEARING: the app inserts
+-- positionally in this exact order. permission is 'READ' or 'DOWNLOAD'.
 DROP TABLE IF EXISTS <APP_CATALOG>.<APP_SCHEMA>.permissions;
 CREATE TABLE <APP_CATALOG>.<APP_SCHEMA>.permissions (
-  user_id      STRING,
+  principal_type STRING,     -- 'USER' or 'GROUP'
+  principal_id   STRING,     -- users.user_id (USER) or AD group display name (GROUP)
   workspace_id STRING,
   uc_catalog   STRING,
   uc_schema    STRING,
@@ -52,7 +57,7 @@ CREATE TABLE <APP_CATALOG>.<APP_SCHEMA>.permissions (
   permission   STRING,      -- 'READ' or 'DOWNLOAD'
   granted_by   STRING,
   granted_at   TIMESTAMP,
-  scope        STRING       -- 'VOLUME' (admin only, whole volume) | 'FOLDER_TREE'
+  scope        STRING       -- 'VOLUME' (admin only, USER only) | 'FOLDER_TREE'
                             -- (folder + everything under it) | 'FOLDER' (just this folder's files)
 );
 

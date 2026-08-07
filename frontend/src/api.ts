@@ -91,17 +91,19 @@ export interface FileEntry  { name: string; size: number; modified: number }
 export interface DirEntry   { name: string; path: string }
 export interface FileListResp { files: FileEntry[]; permission: 'READ' | 'DOWNLOAD' }
 export interface BrowseResp { dirs: DirEntry[]; files: FileEntry[]; permission: 'READ' | 'DOWNLOAD' }
+export type PrincipalType = 'USER' | 'GROUP'
 export interface Permission {
-  user_id: string; display_name: string; databricks_upn: string
+  principal_type: PrincipalType; principal_id: string
+  display_name: string; databricks_upn?: string
   workspace_id: string; workspace_name: string
   uc_catalog: string; uc_schema: string
   volume: string; folder_path: string
   permission: string; scope: Scope; granted_by: string; granted_at: string
 }
 export interface AdminUser  { user_id: string; display_name: string; databricks_upn: string; is_admin: boolean }
-export interface PermBody   { user_id: string; workspace_id: string; uc_catalog: string; uc_schema: string; volume: string; folder_path: string; permission: string; scope: Scope }
-export interface DeleteBody { user_id: string; workspace_id: string; uc_catalog: string; uc_schema: string; volume: string; folder_path: string }
-export interface BulkChange { user_id: string; workspace_id: string; uc_catalog: string; uc_schema: string; volume: string; folder_path: string; permission: string | null }
+export interface PermBody   { principal_type: PrincipalType; principal_id: string; workspace_id: string; uc_catalog: string; uc_schema: string; volume: string; folder_path: string; permission: string; scope: Scope }
+export interface DeleteBody { principal_type: PrincipalType; principal_id: string; workspace_id: string; uc_catalog: string; uc_schema: string; volume: string; folder_path: string }
+export interface BulkChange { principal_type: PrincipalType; principal_id: string; workspace_id: string; uc_catalog: string; uc_schema: string; volume: string; folder_path: string; permission: string | null }
 export interface ImportResult { users_added: number; permissions_added: number }
 export interface AddUserBody      { display_name: string; databricks_upn: string; is_admin: boolean }
 export interface AddWorkspaceBody { workspace_id: string; display_name: string; host_url: string }

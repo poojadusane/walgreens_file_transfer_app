@@ -152,7 +152,7 @@ const fieldLabel = {
   marginBottom: 5, textTransform: 'uppercase' as const, letterSpacing: '.04em',
 }
 
-const emptyPerm: PermBody = { user_id: '', workspace_id: '', uc_catalog: '', uc_schema: '', volume: '', folder_path: '', permission: 'READ', scope: 'FOLDER' }
+const emptyPerm: PermBody = { principal_type: 'USER', principal_id: '', workspace_id: '', uc_catalog: '', uc_schema: '', volume: '', folder_path: '', permission: 'READ', scope: 'FOLDER' }
 
 const SCOPE_LABEL: Record<Scope, string> = {
   VOLUME: 'Whole volume (admin only)',
@@ -246,7 +246,8 @@ export default function AdminPage({ session: _session }: { session: Session }) {
   async function handleUpdate(p: Permission) {
     try {
       await api.adminUpdatePermission({
-        user_id: p.user_id, workspace_id: p.workspace_id,
+        principal_type: p.principal_type, principal_id: p.principal_id,
+        workspace_id: p.workspace_id,
         uc_catalog: p.uc_catalog, uc_schema: p.uc_schema,
         volume: p.volume, folder_path: p.folder_path,
         permission: editRow!.permission, scope: p.scope,
@@ -259,7 +260,8 @@ export default function AdminPage({ session: _session }: { session: Session }) {
     if (!confirm(`Remove ${p.display_name}'s access to ${p.uc_catalog}.${p.uc_schema}.${p.volume}${p.folder_path}?`)) return
     try {
       await api.adminDeletePermission({
-        user_id: p.user_id, workspace_id: p.workspace_id,
+        principal_type: p.principal_type, principal_id: p.principal_id,
+        workspace_id: p.workspace_id,
         uc_catalog: p.uc_catalog, uc_schema: p.uc_schema,
         volume: p.volume, folder_path: p.folder_path,
       })
@@ -389,12 +391,25 @@ export default function AdminPage({ session: _session }: { session: Session }) {
           <h3 style={{ margin: '0 0 16px', fontSize: 16, fontWeight: 700, color: 'var(--db-navy)' }}>Add Permission</h3>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
             <div>
-              <label style={fieldLabel}>User</label>
-              <select value={newPerm.user_id} style={selectStyle}
-                onChange={e => setNewPerm({ ...newPerm, user_id: e.target.value })}>
-                <option value="">—</option>
-                {users.map(u => <option key={u.user_id} value={u.user_id}>{u.display_name}</option>)}
+              <label style={fieldLabel}>Grant to</label>
+              <select value={newPerm.principal_type} style={selectStyle}
+                onChange={e => setNewPerm({ ...newPerm, principal_type: e.target.value as 'USER' | 'GROUP', principal_id: '', scope: e.target.value === 'GROUP' && newPerm.scope === 'VOLUME' ? 'FOLDER' : newPerm.scope })}>
+                <option value="USER">A user</option>
+                <option value="GROUP">An AD group</option>
               </select>
+            </div>
+            <div>
+              <label style={fieldLabel}>{newPerm.principal_type === 'GROUP' ? 'AD group name' : 'User'}</label>
+              {newPerm.principal_type === 'GROUP' ? (
+                <input value={newPerm.principal_id} onChange={e => setNewPerm({ ...newPerm, principal_id: e.target.value })}
+                  placeholder="e.g. Azure-DNA-DevRole-DataEngineer" style={inputStyle} />
+              ) : (
+                <select value={newPerm.principal_id} style={selectStyle}
+                  onChange={e => setNewPerm({ ...newPerm, principal_id: e.target.value })}>
+                  <option value="">—</option>
+                  {users.map(u => <option key={u.user_id} value={u.user_id}>{u.display_name}</option>)}
+                </select>
+              )}
             </div>
             <div>
               <label style={fieldLabel}>Workspace</label>
@@ -438,8 +453,8 @@ export default function AdminPage({ session: _session }: { session: Session }) {
                 onChange={e => setNewPerm({ ...newPerm, scope: e.target.value as Scope })}>
                 <option value="FOLDER">{SCOPE_LABEL.FOLDER}</option>
                 <option value="FOLDER_TREE">{SCOPE_LABEL.FOLDER_TREE}</option>
-                {/* VOLUME only offered when the selected user is an admin */}
-                {isAdmin(users.find(u => u.user_id === newPerm.user_id)) && (
+                {/* VOLUME is USER-only, and only when that user is an admin */}
+                {newPerm.principal_type === 'USER' && isAdmin(users.find(u => u.user_id === newPerm.principal_id)) && (
                   <option value="VOLUME">{SCOPE_LABEL.VOLUME}</option>
                 )}
               </select>
@@ -455,7 +470,7 @@ export default function AdminPage({ session: _session }: { session: Session }) {
           </p>
           <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
             <button onClick={handleAdd}
-              disabled={!newPerm.user_id || !newPerm.workspace_id || !newPerm.uc_catalog || !newPerm.uc_schema || !newPerm.volume || (newPerm.scope !== 'VOLUME' && !newPerm.folder_path)}
+              disabled={!newPerm.principal_id || !newPerm.workspace_id || !newPerm.uc_catalog || !newPerm.uc_schema || !newPerm.volume || (newPerm.scope !== 'VOLUME' && !newPerm.folder_path)}
               style={{ fontWeight: 700, fontSize: 13, padding: '8px 16px', borderRadius: 'var(--r-sm)', background: (newPerm.uc_catalog && newPerm.uc_schema && newPerm.volume && (newPerm.scope === 'VOLUME' || newPerm.folder_path)) ? 'var(--db-navy)' : 'var(--db-gray-300)', color: '#fff' }}>
               ✓ Save
             </button>
@@ -511,19 +526,27 @@ export default function AdminPage({ session: _session }: { session: Session }) {
         <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff', borderRadius: 'var(--r-md)', border: '1px solid var(--db-line)', boxShadow: 'var(--shadow-sm)', overflow: 'hidden' }}>
           <thead>
             <tr>
-              {['User', 'Email', 'Workspace', 'Catalog', 'Schema', 'Volume', 'Folder', 'Permission', 'Scope', 'Granted By', ''].map((h, i) => (
+              {['Principal', 'Email', 'Workspace', 'Catalog', 'Schema', 'Volume', 'Folder', 'Permission', 'Scope', 'Granted By', ''].map((h, i) => (
                 <th key={i} style={{ textAlign: 'left', padding: '11px 14px', fontSize: 11, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: '#fff', background: 'var(--db-navy)', whiteSpace: 'nowrap' }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {filtered.map((p, i) => {
-              const isEditing = editRow?.user_id === p.user_id && editRow?.workspace_id === p.workspace_id &&
+              const isEditing = editRow?.principal_type === p.principal_type && editRow?.principal_id === p.principal_id &&
+                editRow?.workspace_id === p.workspace_id &&
                 editRow?.uc_catalog === p.uc_catalog && editRow?.uc_schema === p.uc_schema &&
                 editRow?.volume === p.volume && editRow?.folder_path === p.folder_path
               return (
                 <tr key={i} style={{ borderTop: '1px solid var(--db-line)', background: i % 2 === 0 ? '#fff' : '#fafaf9' }}>
-                  <td style={{ padding: '10px 14px', fontWeight: 600, color: 'var(--db-navy)', fontSize: 13, whiteSpace: 'nowrap' }}>{p.display_name}</td>
+                  <td style={{ padding: '10px 14px', fontWeight: 600, color: 'var(--db-navy)', fontSize: 13, whiteSpace: 'nowrap' }}>
+                    <span style={{
+                      fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 'var(--r-pill)', marginRight: 6,
+                      background: p.principal_type === 'GROUP' ? '#E4ECFB' : '#EEEDE9',
+                      color: p.principal_type === 'GROUP' ? '#2C4C86' : 'var(--db-ink-muted)',
+                    }}>{p.principal_type === 'GROUP' ? 'GROUP' : 'USER'}</span>
+                    {p.display_name}
+                  </td>
                   <td style={{ padding: '10px 14px', color: 'var(--db-ink-soft)', fontSize: 12, fontFamily: 'var(--font-mono)' }}>{p.databricks_upn || ''}</td>
                   <td style={{ padding: '10px 14px', color: 'var(--db-ink-soft)', fontSize: 13 }}>{p.workspace_name}</td>
                   <td style={{ padding: '10px 14px', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{p.uc_catalog}</td>
