@@ -232,6 +232,26 @@ def debug_whoami(request: Request):
     return result
 
 
+@app.get("/api/debug/lsvol")
+def debug_lsvol(uc_catalog: str, uc_schema: str, volume: str, folder: str,
+                user: dict = Depends(require_admin)):
+    # TEMPORARY diagnostic — lists a volume path AS THE APP SP and returns the
+    # raw result or exception, so the UI's swallowed "Request failed" becomes the
+    # actual error (firewall vs path vs permission). Remove after debugging.
+    path = vol_path(uc_catalog, uc_schema, volume, folder)
+    out = {"path": path, "ok": False, "entry_count": 0, "sample": [], "error": None}
+    try:
+        entries = list(w.files.list_directory_contents(path))
+        out["ok"] = True
+        out["entry_count"] = len(entries)
+        out["sample"] = [
+            {"name": e.name, "is_dir": e.is_directory} for e in entries[:10]
+        ]
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {e}"
+    return out
+
+
 # ── workspaces ────────────────────────────────────────────────────────────────
 
 @app.get("/api/workspaces")
