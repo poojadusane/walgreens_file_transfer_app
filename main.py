@@ -233,8 +233,7 @@ def debug_whoami(request: Request):
 
 
 @app.get("/api/debug/lsvol")
-def debug_lsvol(uc_catalog: str, uc_schema: str, volume: str, folder: str,
-                user: dict = Depends(require_admin)):
+def debug_lsvol(uc_catalog: str, uc_schema: str, volume: str, folder: str):
     # TEMPORARY diagnostic — lists a volume path AS THE APP SP and returns the
     # raw result or exception, so the UI's swallowed "Request failed" becomes the
     # actual error (firewall vs path vs permission). Remove after debugging.
