@@ -12,8 +12,10 @@ app. It applies to both the dev test and the eventual production rollout.
   header and checks it against the `users` config table.
 - The app fetches files using its **own service principal (SP)** via the Unity
   Catalog Files API. End users never touch the volume directly.
-- Access is driven entirely by three config tables in `<APP_CATALOG>.config`:
-  `users`, `workspaces`, `permissions`.
+- Access is driven entirely by three config tables in `<APP_CATALOG>.<APP_SCHEMA>`:
+  `users`, `workspaces`, `permissions`. Both the catalog and schema are set via
+  the `APP_CATALOG` / `APP_SCHEMA` env vars in `app.yaml` (schema defaults to
+  `config`). This deployment uses `dlx_platform_dev.access_metadata`.
 - Because Unity Catalog is **metastore-level**, one app deployment can serve
   volumes across every workspace on the same metastore — the app does not need
   to be deployed in the workspace where the data lives.
@@ -28,7 +30,7 @@ following must be true:
 | # | Requirement | Who does it | How to verify |
 |---|-------------|-------------|---------------|
 | 1 | App is deployed and running | You (CLI) | App URL loads the login page |
-| 2 | Config tables exist in `<APP_CATALOG>.config` | You (setup.sql) | `DESCRIBE <APP_CATALOG>.config.permissions` |
+| 2 | Config tables exist in `<APP_CATALOG>.<APP_SCHEMA>` | You (setup.sql) | `DESCRIBE <APP_CATALOG>.<APP_SCHEMA>.permissions` |
 | 3 | Tester is in the `users` table with the exact SSO email | You (Admin UI / SQL) | row in `users` |
 | 4 | Tester has `CAN USE` on the Databricks App itself | Admin (App → Share) | tester can open the app (no "Permission Required" screen) |
 | 5 | App SP has UC grants on the target volume | UC admin (SQL) | see grant block below |
@@ -84,11 +86,11 @@ A Unity Catalog volume path decomposes like this:
 
 ```sql
 -- workspace row (workspace_id is a label; reuse it verbatim in the permission)
-INSERT INTO <APP_CATALOG>.config.workspaces (workspace_id, display_name, host_url)
+INSERT INTO <APP_CATALOG>.<APP_SCHEMA>.workspaces (workspace_id, display_name, host_url)
 VALUES ('<ws_id>', '<display>', '<host_url>');
 
 -- permission row (9-col schema shown; add scope col if your table has it)
-INSERT INTO <APP_CATALOG>.config.permissions
+INSERT INTO <APP_CATALOG>.<APP_SCHEMA>.permissions
   (user_id, workspace_id, uc_catalog, uc_schema, volume, folder_path, permission, granted_by, granted_at)
 VALUES ('<user_id>', '<ws_id>', '<catalog>', '<schema>', '<volume>', '<folder_path>',
         'DOWNLOAD', '<granter_user_id>', current_timestamp());

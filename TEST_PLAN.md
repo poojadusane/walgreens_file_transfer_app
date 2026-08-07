@@ -23,7 +23,7 @@ holds. Out of scope: load/performance testing, penetration testing, DR.
 Before executing, confirm all of the following are true (see `TESTING.md §2`):
 
 - [ ] App deployed and running (URL loads the SSO login page)
-- [ ] Config tables exist in `data_migration_validator_dev.config` with the current schema (permissions has `scope`)
+- [ ] Config tables exist in `<APP_CATALOG>.<APP_SCHEMA>` (per app.yaml) with the current schema (permissions has `scope`)
 - [ ] Testers exist in `users` with exact SSO emails: Pooja (admin), Guo Chen (non-admin), Mohamed Ziane (non-admin)
 - [ ] All testers have `CAN USE` on the Databricks App
 - [ ] App SP `2b75bedd-d97d-4a24-ac8e-b120a0f996ff` has `USE CATALOG` / `USE SCHEMA` / `READ VOLUME` on the test volume `dlx_dev.ext_vols.dlxdevsemprtoutsa10-ice-phi`
