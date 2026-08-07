@@ -1,8 +1,10 @@
 command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 env:
   - name: WAREHOUSE_ID
-    value: "c65468b09820ba98"
+    value: "c65468b09820ba98"          # set to your workspace's SQL warehouse id
   - name: JWT_SECRET
-    value: "lazy-beaver-demo-2026"
+    value: "change-me"                  # set any long random string
   - name: APP_CATALOG
-    value: "lazy_beaver"
+    value: "dlx_platform_dev"           # catalog holding the app's config tables
+  - name: APP_SCHEMA
+    value: "access_metadata"            # schema within that catalog (default: config)

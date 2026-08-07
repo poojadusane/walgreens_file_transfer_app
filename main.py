@@ -19,6 +19,7 @@ w            = WorkspaceClient()
 WAREHOUSE_ID = os.environ.get("WAREHOUSE_ID", "")
 JWT_SECRET   = os.environ.get("JWT_SECRET", "change-me")
 APP_CATALOG  = os.environ.get("APP_CATALOG", "wag_file_transfer")
+APP_SCHEMA   = os.environ.get("APP_SCHEMA", "config")
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -75,7 +76,7 @@ def resolve_perm(uid: str, workspace_id: str, uc_catalog: str, uc_schema: str,
     # Find every grant this user has on this volume, then pick one that COVERS
     # the requested folder. Prefer DOWNLOAD over READ when multiple cover it.
     rows = run_sql(f"""
-        SELECT permission, scope, folder_path FROM {APP_CATALOG}.config.permissions
+        SELECT permission, scope, folder_path FROM {APP_CATALOG}.{APP_SCHEMA}.permissions
         WHERE user_id = '{uid}' AND workspace_id = '{workspace_id}'
           AND uc_catalog = '{uc_catalog}' AND uc_schema = '{uc_schema}'
           AND volume = '{volume}'
@@ -104,7 +105,7 @@ def me(request: Request):
     if not email:
         raise HTTPException(401, "No SSO identity — app must be opened as a Databricks App")
     rows = run_sql(
-        f"SELECT * FROM {APP_CATALOG}.config.users WHERE databricks_upn = '{email}'"
+        f"SELECT * FROM {APP_CATALOG}.{APP_SCHEMA}.users WHERE databricks_upn = '{email}'"
     )
     if not rows:
         raise HTTPException(403, f"{email} is not provisioned. Ask your admin to add you.")
@@ -129,8 +130,8 @@ def get_workspaces(user: dict = Depends(current_user)):
     uid = user["user_id"]
     return run_sql(f"""
         SELECT DISTINCT w.workspace_id, w.display_name, w.host_url
-        FROM {APP_CATALOG}.config.workspaces w
-        JOIN {APP_CATALOG}.config.permissions p ON w.workspace_id = p.workspace_id
+        FROM {APP_CATALOG}.{APP_SCHEMA}.workspaces w
+        JOIN {APP_CATALOG}.{APP_SCHEMA}.permissions p ON w.workspace_id = p.workspace_id
         WHERE p.user_id = '{uid}'
         ORDER BY w.display_name
     """)
@@ -143,7 +144,7 @@ def get_volumes(workspace_id: str, user: dict = Depends(current_user)):
     uid = user["user_id"]
     rows = run_sql(f"""
         SELECT uc_catalog, uc_schema, volume, folder_path, permission, scope
-        FROM {APP_CATALOG}.config.permissions
+        FROM {APP_CATALOG}.{APP_SCHEMA}.permissions
         WHERE user_id = '{uid}' AND workspace_id = '{workspace_id}'
         ORDER BY uc_catalog, uc_schema, volume, folder_path
     """)
@@ -262,10 +263,10 @@ def admin_list_permissions(user: dict = Depends(require_admin)):
                w.display_name AS workspace_name,
                p.uc_catalog, p.uc_schema, p.volume, p.folder_path, p.permission, p.scope,
                COALESCE(g.display_name, p.granted_by) AS granted_by, p.granted_at
-        FROM {APP_CATALOG}.config.permissions p
-        JOIN {APP_CATALOG}.config.users u ON p.user_id = u.user_id
-        JOIN {APP_CATALOG}.config.workspaces w ON p.workspace_id = w.workspace_id
-        LEFT JOIN {APP_CATALOG}.config.users g ON p.granted_by = g.user_id
+        FROM {APP_CATALOG}.{APP_SCHEMA}.permissions p
+        JOIN {APP_CATALOG}.{APP_SCHEMA}.users u ON p.user_id = u.user_id
+        JOIN {APP_CATALOG}.{APP_SCHEMA}.workspaces w ON p.workspace_id = w.workspace_id
+        LEFT JOIN {APP_CATALOG}.{APP_SCHEMA}.users g ON p.granted_by = g.user_id
         ORDER BY u.display_name, p.workspace_id, p.uc_catalog, p.uc_schema, p.volume, p.folder_path
     """)
 
@@ -274,13 +275,13 @@ def admin_list_permissions(user: dict = Depends(require_admin)):
 def admin_list_users(user: dict = Depends(require_admin)):
     return run_sql(
         f"SELECT user_id, display_name, databricks_upn, is_admin "
-        f"FROM {APP_CATALOG}.config.users ORDER BY display_name"
+        f"FROM {APP_CATALOG}.{APP_SCHEMA}.users ORDER BY display_name"
     )
 
 
 @app.get("/api/admin/workspaces")
 def admin_list_workspaces(user: dict = Depends(require_admin)):
-    return run_sql(f"SELECT * FROM {APP_CATALOG}.config.workspaces ORDER BY display_name")
+    return run_sql(f"SELECT * FROM {APP_CATALOG}.{APP_SCHEMA}.workspaces ORDER BY display_name")
 
 
 class NewUser(BaseModel):
@@ -294,7 +295,7 @@ def add_user(body: NewUser, user: dict = Depends(require_admin)):
     email = safe(body.databricks_upn).strip()
     if not email:
         raise HTTPException(400, "Email is required")
-    existing = run_sql(f"SELECT user_id FROM {APP_CATALOG}.config.users")
+    existing = run_sql(f"SELECT user_id FROM {APP_CATALOG}.{APP_SCHEMA}.users")
     existing_ids = {r["user_id"] for r in existing}
     uid  = email.split("@")[0].replace(".", "_").replace("-", "_")
     base = uid; n = 1
@@ -302,7 +303,7 @@ def add_user(body: NewUser, user: dict = Depends(require_admin)):
         uid = f"{base}_{n}"; n += 1
     is_admin = "true" if body.is_admin else "false"
     run_sql(
-        f"INSERT INTO {APP_CATALOG}.config.users VALUES "
+        f"INSERT INTO {APP_CATALOG}.{APP_SCHEMA}.users VALUES "
         f"('{uid}','{name}','{email}',{is_admin})"
     )
     return {"ok": True, "user_id": uid}
@@ -321,13 +322,13 @@ def add_workspace(body: NewWorkspace, user: dict = Depends(require_admin)):
     if not ws_id:
         raise HTTPException(400, "Workspace id is required")
     dupe = run_sql(
-        f"SELECT workspace_id FROM {APP_CATALOG}.config.workspaces "
+        f"SELECT workspace_id FROM {APP_CATALOG}.{APP_SCHEMA}.workspaces "
         f"WHERE workspace_id = '{ws_id}'"
     )
     if dupe:
         raise HTTPException(400, f"Workspace '{ws_id}' already exists")
     run_sql(
-        f"INSERT INTO {APP_CATALOG}.config.workspaces VALUES "
+        f"INSERT INTO {APP_CATALOG}.{APP_SCHEMA}.workspaces VALUES "
         f"('{ws_id}','{name}','{host}')"
     )
     return {"ok": True}
@@ -342,7 +343,7 @@ def set_admin(body: SetAdmin, user: dict = Depends(require_admin)):
     uid      = safe(body.user_id)
     is_admin = "true" if body.is_admin else "false"
     run_sql(
-        f"UPDATE {APP_CATALOG}.config.users SET is_admin={is_admin} "
+        f"UPDATE {APP_CATALOG}.{APP_SCHEMA}.users SET is_admin={is_admin} "
         f"WHERE user_id='{uid}'"
     )
     return {"ok": True}
@@ -352,7 +353,7 @@ VALID_SCOPES = ("VOLUME", "FOLDER_TREE", "FOLDER")
 
 def _is_admin_user(user_id: str) -> bool:
     rows = run_sql(
-        f"SELECT is_admin FROM {APP_CATALOG}.config.users WHERE user_id = '{user_id}'"
+        f"SELECT is_admin FROM {APP_CATALOG}.{APP_SCHEMA}.users WHERE user_id = '{user_id}'"
     )
     return bool(rows) and str(rows[0]["is_admin"]).lower() == "true"
 
@@ -379,7 +380,7 @@ def add_permission(body: PermRow, user: dict = Depends(require_admin)):
         raise HTTPException(403, "Whole-volume access can only be granted to admins")
     granter = user["user_id"]
     run_sql(f"""
-        INSERT INTO {APP_CATALOG}.config.permissions
+        INSERT INTO {APP_CATALOG}.{APP_SCHEMA}.permissions
         VALUES ('{body.user_id}','{body.workspace_id}','{body.uc_catalog}','{body.uc_schema}',
                 '{body.volume}','{body.folder_path}','{body.permission}','{granter}',current_timestamp(),'{scope}')
     """)
@@ -405,7 +406,7 @@ def update_permission(body: UpdatePerm, user: dict = Depends(require_admin)):
         raise HTTPException(403, "Whole-volume access can only be granted to admins")
     granter = user["user_id"]
     run_sql(f"""
-        UPDATE {APP_CATALOG}.config.permissions
+        UPDATE {APP_CATALOG}.{APP_SCHEMA}.permissions
         SET permission='{body.permission}', scope='{scope}', granted_by='{granter}', granted_at=current_timestamp()
         WHERE user_id='{body.user_id}' AND workspace_id='{body.workspace_id}'
           AND uc_catalog='{body.uc_catalog}' AND uc_schema='{body.uc_schema}'
@@ -425,7 +426,7 @@ class DeletePerm(BaseModel):
 @app.delete("/api/admin/permission")
 def delete_permission(body: DeletePerm, user: dict = Depends(require_admin)):
     run_sql(f"""
-        DELETE FROM {APP_CATALOG}.config.permissions
+        DELETE FROM {APP_CATALOG}.{APP_SCHEMA}.permissions
         WHERE user_id='{body.user_id}' AND workspace_id='{body.workspace_id}'
           AND uc_catalog='{body.uc_catalog}' AND uc_schema='{body.uc_schema}'
           AND volume='{body.volume}' AND folder_path='{body.folder_path}'
@@ -471,7 +472,7 @@ def bulk_permissions(body: BulkBody, user: dict = Depends(require_admin)):
         f" AND volume='{c.volume}' AND folder_path='{c.folder_path}')"
         for c in body.changes
     )
-    run_sql(f"DELETE FROM {APP_CATALOG}.config.permissions WHERE {conds}")
+    run_sql(f"DELETE FROM {APP_CATALOG}.{APP_SCHEMA}.permissions WHERE {conds}")
     to_add = [c for c in body.changes if c.permission]
     if to_add:
         granter = user["user_id"]
@@ -480,7 +481,7 @@ def bulk_permissions(body: BulkBody, user: dict = Depends(require_admin)):
             f"'{c.volume}','{c.folder_path}','{c.permission}','{granter}',current_timestamp(),'FOLDER')"
             for c in to_add
         )
-        run_sql(f"INSERT INTO {APP_CATALOG}.config.permissions VALUES {vals}")
+        run_sql(f"INSERT INTO {APP_CATALOG}.{APP_SCHEMA}.permissions VALUES {vals}")
     return {"ok": True, "applied": len(body.changes)}
 
 
@@ -494,7 +495,7 @@ async def import_csv(file: UploadFile = File(...), user: dict = Depends(require_
 
     existing = {
         r["databricks_upn"]: r["user_id"]
-        for r in run_sql(f"SELECT user_id, databricks_upn FROM {APP_CATALOG}.config.users")
+        for r in run_sql(f"SELECT user_id, databricks_upn FROM {APP_CATALOG}.{APP_SCHEMA}.users")
     }
     existing_ids = set(existing.values())
 
@@ -521,7 +522,7 @@ async def import_csv(file: UploadFile = File(...), user: dict = Depends(require_
             while uid in existing_ids:
                 uid = f"{base}_{n}"; n += 1
             run_sql(
-                f"INSERT INTO {APP_CATALOG}.config.users VALUES "
+                f"INSERT INTO {APP_CATALOG}.{APP_SCHEMA}.users VALUES "
                 f"('{uid}','{name}','{email}',false)"
             )
             existing[email] = uid
@@ -535,13 +536,13 @@ async def import_csv(file: UploadFile = File(...), user: dict = Depends(require_
             f" AND uc_schema='{r[3]}' AND volume='{r[4]}' AND folder_path='{r[5]}')"
             for r in perm_rows
         )
-        run_sql(f"DELETE FROM {APP_CATALOG}.config.permissions WHERE {conds}")
+        run_sql(f"DELETE FROM {APP_CATALOG}.{APP_SCHEMA}.permissions WHERE {conds}")
         granter = user["user_id"]
         vals = ", ".join(
             f"('{r[0]}','{r[1]}','{r[2]}','{r[3]}','{r[4]}','{r[5]}','{r[6]}','{granter}',current_timestamp(),'{r[7]}')"
             for r in perm_rows
         )
-        run_sql(f"INSERT INTO {APP_CATALOG}.config.permissions VALUES {vals}")
+        run_sql(f"INSERT INTO {APP_CATALOG}.{APP_SCHEMA}.permissions VALUES {vals}")
 
     return {"users_added": users_added, "permissions_added": len(perm_rows)}
 
