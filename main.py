@@ -164,18 +164,32 @@ def me(request: Request):
     email = request.headers.get("X-Forwarded-Email", "")
     if not email:
         raise HTTPException(401, "No SSO identity — app must be opened as a Databricks App")
+    safe(email)
+    # Access is gated by the Databricks App "Can Use" grant (typically an AD
+    # group) + the user's folder grants. The users table is NOT a login gate —
+    # it only records who is an ADMIN and an optional display name. A user with
+    # no users row logs in as a non-admin; their access comes from group grants.
     rows = run_sql(
         f"SELECT * FROM {APP_CATALOG}.{APP_SCHEMA}.users WHERE databricks_upn = '{email}'"
     )
-    if not rows:
-        raise HTTPException(403, f"{email} is not provisioned. Ask your admin to add you.")
-    user = rows[0]
+    if rows:
+        user = rows[0]
+        user_id      = user["user_id"]
+        display_name = user["display_name"]
+        is_admin     = user["is_admin"] == "true"
+    else:
+        # Not provisioned individually — identify them by their email/SSO id.
+        user_id      = email
+        display_name = request.headers.get("X-Forwarded-Preferred-Username", "") or email
+        is_admin     = False
+        user = {"user_id": user_id, "display_name": display_name,
+                "databricks_upn": email, "is_admin": str(is_admin).lower()}
     groups = resolve_user_groups(request)
     token = jwt.encode(
         {
-            "user_id":      user["user_id"],
-            "display_name": user["display_name"],
-            "is_admin":     user["is_admin"] == "true",
+            "user_id":      user_id,
+            "display_name": display_name,
+            "is_admin":     is_admin,
             "groups":       groups,
             "exp":          int(time.time()) + TOKEN_TTL_SECONDS,
         },
