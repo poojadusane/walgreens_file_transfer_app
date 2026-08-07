@@ -117,6 +117,18 @@ TOKEN_TTL_SECONDS = 4 * 60 * 60   # 4h — group memberships are cached in the J
                                   # this long, so a group change propagates within ~4h.
 
 
+def _workspace_url(request: Request) -> str:
+    # Build a proper https:// base URL. DATABRICKS_HOST / X-Forwarded-Host often
+    # arrive as a bare hostname (no scheme); urllib needs the scheme.
+    host = os.environ.get("DATABRICKS_HOST", "").strip()
+    if not host:
+        host = request.headers.get("X-Forwarded-Host", "").strip()
+    host = host.rstrip("/")
+    if host and not host.startswith("http"):
+        host = "https://" + host
+    return host
+
+
 def resolve_user_groups(request: Request) -> list:
     # Resolve the logged-in user's OWN group memberships from the forwarded
     # user token (downscoped, iam.current-user:read). Fail-safe: any problem
@@ -126,9 +138,7 @@ def resolve_user_groups(request: Request) -> list:
     if not tok:
         return []
     try:
-        host = os.environ.get("DATABRICKS_HOST", "").rstrip("/")
-        if not host:
-            host = "https://" + request.headers.get("X-Forwarded-Host", "")
+        host = _workspace_url(request)
         import urllib.request, json as _json
         req = urllib.request.Request(
             f"{host}/api/2.0/preview/scim/v2/Me",
@@ -191,9 +201,7 @@ def debug_whoami(request: Request):
         result["scim_error"] = "No X-Forwarded-Access-Token header (OBO not forwarding a user token)"
         return result
     try:
-        host = os.environ.get("DATABRICKS_HOST", "").rstrip("/")
-        if not host:
-            host = "https://" + request.headers.get("X-Forwarded-Host", "")
+        host = _workspace_url(request)
         result["host_used"] = host
         import urllib.request, json as _json
         req = urllib.request.Request(
