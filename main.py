@@ -175,6 +175,41 @@ def me(request: Request):
     return {"token": token, "user": user}
 
 
+@app.get("/api/debug/whoami")
+def debug_whoami(request: Request):
+    # TEMPORARY diagnostic — shows exactly what the app can see about the caller,
+    # so we can tell why group grants aren't resolving. Remove after debugging.
+    tok = request.headers.get("X-Forwarded-Access-Token", "")
+    result = {
+        "email": request.headers.get("X-Forwarded-Email", ""),
+        "has_forwarded_token": bool(tok),
+        "resolved_groups": [],
+        "scim_error": None,
+        "scim_raw_group_count": 0,
+    }
+    if not tok:
+        result["scim_error"] = "No X-Forwarded-Access-Token header (OBO not forwarding a user token)"
+        return result
+    try:
+        host = os.environ.get("DATABRICKS_HOST", "").rstrip("/")
+        if not host:
+            host = "https://" + request.headers.get("X-Forwarded-Host", "")
+        result["host_used"] = host
+        import urllib.request, json as _json
+        req = urllib.request.Request(
+            f"{host}/api/2.0/preview/scim/v2/Me",
+            headers={"Authorization": f"Bearer {tok}"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = _json.loads(resp.read().decode("utf-8"))
+        raw = data.get("groups") or []
+        result["scim_raw_group_count"] = len(raw)
+        result["resolved_groups"] = [g.get("display") for g in raw if g.get("display")]
+    except Exception as e:
+        result["scim_error"] = f"{type(e).__name__}: {e}"
+    return result
+
+
 # ── workspaces ────────────────────────────────────────────────────────────────
 
 @app.get("/api/workspaces")
