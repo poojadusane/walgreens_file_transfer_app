@@ -10,7 +10,7 @@
 #   databricks bundle validate -t dev
 #   databricks bundle run  setup_download_tables -t dev   # one-time: create tables
 #   databricks bundle deploy -t dev
-#   databricks bundle run  file_transfer -t dev           # start the app
+#   databricks bundle run  file_download -t dev           # start the app
 #
 # ---------------------------------------------------------------------------
 # WHAT IS AND ISN'T COMMITTED HERE (Databricks-recommended pattern)
@@ -30,19 +30,15 @@
 # =============================================================================
 
 bundle:
-  # App name kept as walgreens-file-transfer for dev so the EXISTING app + its
-  # service principal (already granted) are reused — no new SP, no re-grant.
-  # Rename to walgreens-file-download before the test deploy (test = new
-  # workspace = new SP anyway, so the rename is free there).
-  name: walgreens-file-transfer
+  name: walgreens-file-download
 
 # ---------------------------------------------------------------------------
 # Resources: the app + a one-time setup job that creates the config tables.
 # ---------------------------------------------------------------------------
 resources:
   apps:
-    file_transfer:
-      name: walgreens-file-transfer
+    file_download:
+      name: walgreens-file-download
       description: "Secure Unity Catalog file download for business users"
       source_code_path: ./            # bundle syncs this repo dir -> workspace
       resources:
@@ -67,7 +63,7 @@ resources:
   # `-t test` uses test's catalog/schema/ext_location automatically.
   jobs:
     setup_download_tables:
-      name: "[${bundle.target}] walgreens-file-transfer setup"
+      name: "[${bundle.target}] walgreens-file-download setup"
       parameters:
         - name: catalog
           default: ${var.app_catalog}
