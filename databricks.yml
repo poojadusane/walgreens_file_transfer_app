@@ -106,7 +106,8 @@ targets:
   # ---- DEV (real values; the only env available today) -------------------
   dev:
     default: true
-    mode: development
+    # NOTE: no `mode: development` — dev mode requires a per-user root_path, but
+    # we deploy to the shared Walgreens apps folder. Omitting mode validates fine.
     workspace:
       host: https://adb-2596972336492633.13.azuredatabricks.net
       # Walgreens-designated shared apps folder (write access granted here).
@@ -114,10 +115,10 @@ targets:
     variables:
       app_catalog: dlx_platform_dev
       app_schema: access_metadata
-      warehouse_id: TODO_DEV_WAREHOUSE_ID              # confirm the dev SQL warehouse id
-      ext_location: abfss://access-metadata@dlxdevplatfmetadatasa10.dfs.core.windows.net  # confirm exact container/path
-      admin_email: TODO_DEV_ADMIN_EMAIL                # e.g. pooja.dusane@walgreens.com
-      admin_name: TODO_DEV_ADMIN_NAME
+      warehouse_id: 41d8b422559d6cb1
+      ext_location: abfss://access-metadata@dlxdevplatfmetadatasa10.dfs.core.windows.net
+      admin_email: pooja.dusane@walgreens.com
+      admin_name: Pooja Dusane
       jwt_secret_scope: wagfiledownload-dev            # created via `databricks secrets create-scope`
       jwt_secret_key: jwt_secret
 
