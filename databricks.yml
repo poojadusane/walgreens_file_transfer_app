@@ -22,7 +22,7 @@
 # target.
 #
 # The ONLY true SECRET is JWT_SECRET -> stored in a Databricks secret scope,
-# injected via valueFrom, never committed.
+# injected via value_from, never committed.
 #
 # Auth (Walgreens): PATs are disabled -> `databricks auth login` (OAuth/SSO),
 # deploy interactively from the VDI. Each environment is a SEPARATE app in that
