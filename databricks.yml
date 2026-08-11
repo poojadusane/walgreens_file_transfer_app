@@ -56,7 +56,7 @@ resources:
           - name: WAREHOUSE_ID
             value: ${var.warehouse_id}
           - name: JWT_SECRET
-            valueFrom: jwt_secret     # resolved from the secret resource above
+            value_from: jwt_secret     # resolved from the secret resource above
 
   # One-time (idempotent) job that creates the 3 EXTERNAL config tables at the
   # target's ADLS path. Parameters default to this target's ${var.*}, so
@@ -114,7 +114,7 @@ targets:
       ext_location: abfss://access-metadata@dlxdevplatfmetadatasa10.dfs.core.windows.net  # confirm exact container/path
       admin_email: TODO_DEV_ADMIN_EMAIL                # e.g. pooja.dusane@walgreens.com
       admin_name: TODO_DEV_ADMIN_NAME
-      jwt_secret_scope: TODO_DEV_SECRET_SCOPE          # create a scope + jwt_secret key
+      jwt_secret_scope: wagfiledownload-dev            # created via `databricks secrets create-scope`
       jwt_secret_key: jwt_secret
 
   # ---- TEST (fill when Walgreens shares it) ------------------------------
