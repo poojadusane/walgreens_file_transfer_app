@@ -1,11 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, Permission, AdminUser, Workspace, PermBody, Scope } from '../api'
+import { api, Permission, Workspace, PermBody, Scope } from '../api'
 import { Session } from '../App'
-
-// is_admin comes back from the SQL warehouse as the STRING "true"/"false".
-// A plain !! test treats "false" as truthy — normalize it here.
-const isAdmin = (u?: { is_admin: unknown }): boolean =>
-  !!u && String(u.is_admin).toLowerCase() === 'true'
 
 const LvlBadge = ({ level }: { level: string }) => (
   <span style={{
@@ -162,15 +157,12 @@ const SCOPE_LABEL: Record<Scope, string> = {
 
 export default function AdminPage({ session: _session }: { session: Session }) {
   const [perms, setPerms]           = useState<Permission[]>([])
-  const [users, setUsers]           = useState<AdminUser[]>([])
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [loading, setLoading]       = useState(true)
   const [editRow, setEditRow]       = useState<Permission | null>(null)
   const [showAdd, setShowAdd]       = useState(false)
-  const [showAddUser, setShowAddUser]   = useState(false)
   const [showAddWs, setShowAddWs]       = useState(false)
   const [newPerm, setNewPerm]       = useState<PermBody>({ ...emptyPerm })
-  const [newUser, setNewUser]       = useState({ display_name: '', databricks_upn: '', is_admin: false })
   const [newWs, setNewWs]           = useState({ workspace_id: '', display_name: '', host_url: '' })
   const [error, setError]           = useState('')
   const [fUser, setFUser]           = useState('')
@@ -198,8 +190,8 @@ export default function AdminPage({ session: _session }: { session: Session }) {
   async function load() {
     setLoading(true)
     try {
-      const [p, u, w] = await Promise.all([api.adminGetPermissions(), api.adminGetUsers(), api.adminGetWorkspaces()])
-      setPerms(p); setUsers(u); setWorkspaces(w)
+      const [p, w] = await Promise.all([api.adminGetPermissions(), api.adminGetWorkspaces()])
+      setPerms(p); setWorkspaces(w)
     } catch (e: any) { setError(e.message) }
     finally { setLoading(false) }
   }
@@ -218,27 +210,11 @@ export default function AdminPage({ session: _session }: { session: Session }) {
     } catch (e: any) { setError(e.message) }
   }
 
-  async function handleAddUser() {
-    try {
-      await api.adminAddUser(newUser)
-      setShowAddUser(false)
-      setNewUser({ display_name: '', databricks_upn: '', is_admin: false })
-      load()
-    } catch (e: any) { setError(e.message) }
-  }
-
   async function handleAddWs() {
     try {
       await api.adminAddWorkspace(newWs)
       setShowAddWs(false)
       setNewWs({ workspace_id: '', display_name: '', host_url: '' })
-      load()
-    } catch (e: any) { setError(e.message) }
-  }
-
-  async function toggleAdmin(u: AdminUser) {
-    try {
-      await api.adminSetAdmin({ user_id: u.user_id, is_admin: !isAdmin(u) })
       load()
     } catch (e: any) { setError(e.message) }
   }
@@ -300,9 +276,8 @@ export default function AdminPage({ session: _session }: { session: Session }) {
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <input ref={fileInputRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={handleImport} />
           <button onClick={() => fileInputRef.current?.click()} style={btn('var(--db-navy)')}>↑ Import CSV</button>
-          <button onClick={() => { setShowAddUser(true); setShowAddWs(false); setShowAdd(false) }} style={btn('var(--db-slate)')}>+ Add User</button>
-          <button onClick={() => { setShowAddWs(true); setShowAddUser(false); setShowAdd(false) }} style={btn('var(--db-slate)')}>+ Add Workspace</button>
-          <button onClick={() => { setShowAdd(true); setShowAddUser(false); setShowAddWs(false) }} style={btn('var(--db-lava)')}>+ Add Permission</button>
+          <button onClick={() => { setShowAddWs(true); setShowAdd(false) }} style={btn('var(--db-slate)')}>+ Add Workspace</button>
+          <button onClick={() => { setShowAdd(true); setShowAddWs(false) }} style={btn('var(--db-lava)')}>+ Add Permission</button>
         </div>
       </div>
 
@@ -321,36 +296,6 @@ export default function AdminPage({ session: _session }: { session: Session }) {
       {error && (
         <div style={{ background: 'var(--db-tint-rose)', border: '1px solid #f5c0bb', borderRadius: 'var(--r-sm)', padding: '10px 14px', marginBottom: 16, fontSize: 13, color: 'var(--db-red)' }}>
           {error} <button onClick={() => setError('')} style={{ marginLeft: 8, color: 'inherit', fontWeight: 700 }}>×</button>
-        </div>
-      )}
-
-      {/* Add User panel */}
-      {showAddUser && (
-        <div style={{ background: '#fff', border: '1px solid var(--db-line)', borderRadius: 'var(--r-md)', padding: '20px', marginBottom: 20, boxShadow: 'var(--shadow-sm)' }}>
-          <h3 style={{ margin: '0 0 16px', fontSize: 16, fontWeight: 700, color: 'var(--db-navy)' }}>Add User</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 12, alignItems: 'end' }}>
-            <div>
-              <label style={fieldLabel}>Display name</label>
-              <input value={newUser.display_name} onChange={e => setNewUser({ ...newUser, display_name: e.target.value })}
-                placeholder="Jane Doe" style={{ ...inputStyle, fontFamily: 'var(--font-sans)' }} />
-            </div>
-            <div>
-              <label style={fieldLabel}>Email (Azure AD UPN)</label>
-              <input value={newUser.databricks_upn} onChange={e => setNewUser({ ...newUser, databricks_upn: e.target.value })}
-                placeholder="jane.doe@walgreens.com" style={inputStyle} />
-            </div>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--db-ink)', paddingBottom: 8, whiteSpace: 'nowrap' }}>
-              <input type="checkbox" checked={newUser.is_admin} onChange={e => setNewUser({ ...newUser, is_admin: e.target.checked })} />
-              Admin
-            </label>
-          </div>
-          <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-            <button onClick={handleAddUser} disabled={!newUser.databricks_upn}
-              style={{ fontWeight: 700, fontSize: 13, padding: '8px 16px', borderRadius: 'var(--r-sm)', background: newUser.databricks_upn ? 'var(--db-navy)' : 'var(--db-gray-300)', color: '#fff' }}>
-              ✓ Save
-            </button>
-            <button onClick={() => setShowAddUser(false)} style={{ fontSize: 13, padding: '8px 16px', borderRadius: 'var(--r-sm)', color: 'var(--db-ink-soft)', border: '1px solid var(--db-line)' }}>Cancel</button>
-          </div>
         </div>
       )}
 
@@ -399,17 +344,10 @@ export default function AdminPage({ session: _session }: { session: Session }) {
               </select>
             </div>
             <div>
-              <label style={fieldLabel}>{newPerm.principal_type === 'GROUP' ? 'AD group name' : 'User'}</label>
-              {newPerm.principal_type === 'GROUP' ? (
-                <input value={newPerm.principal_id} onChange={e => setNewPerm({ ...newPerm, principal_id: e.target.value })}
-                  placeholder="e.g. Azure-DNA-DevRole-DataEngineer" style={inputStyle} />
-              ) : (
-                <select value={newPerm.principal_id} style={selectStyle}
-                  onChange={e => setNewPerm({ ...newPerm, principal_id: e.target.value })}>
-                  <option value="">—</option>
-                  {users.map(u => <option key={u.user_id} value={u.user_id}>{u.display_name}</option>)}
-                </select>
-              )}
+              <label style={fieldLabel}>AD group name or email address</label>
+              <input value={newPerm.principal_id} onChange={e => setNewPerm({ ...newPerm, principal_id: e.target.value })}
+                placeholder={newPerm.principal_type === 'GROUP' ? 'e.g. role-dna-analytics-download' : 'e.g. jane.doe@walgreens.com'}
+                style={inputStyle} />
             </div>
             <div>
               <label style={fieldLabel}>Workspace</label>
@@ -453,8 +391,8 @@ export default function AdminPage({ session: _session }: { session: Session }) {
                 onChange={e => setNewPerm({ ...newPerm, scope: e.target.value as Scope })}>
                 <option value="FOLDER">{SCOPE_LABEL.FOLDER}</option>
                 <option value="FOLDER_TREE">{SCOPE_LABEL.FOLDER_TREE}</option>
-                {/* VOLUME is USER-only, and only when that user is an admin */}
-                {newPerm.principal_type === 'USER' && isAdmin(users.find(u => u.user_id === newPerm.principal_id)) && (
+                {/* VOLUME is USER-only; the server further restricts it to admins. */}
+                {newPerm.principal_type === 'USER' && (
                   <option value="VOLUME">{SCOPE_LABEL.VOLUME}</option>
                 )}
               </select>
@@ -477,27 +415,6 @@ export default function AdminPage({ session: _session }: { session: Session }) {
             <button onClick={() => setShowAdd(false)} style={{ fontSize: 13, padding: '8px 16px', borderRadius: 'var(--r-sm)', color: 'var(--db-ink-soft)', border: '1px solid var(--db-line)' }}>Cancel</button>
           </div>
         </div>
-      )}
-
-      {/* Users summary with admin toggle */}
-      {users.length > 0 && (
-        <details style={{ marginBottom: 20, background: '#fff', border: '1px solid var(--db-line)', borderRadius: 'var(--r-md)', boxShadow: 'var(--shadow-sm)' }}>
-          <summary style={{ cursor: 'pointer', padding: '12px 16px', fontWeight: 700, fontSize: 14, color: 'var(--db-navy)' }}>
-            Users ({users.length})
-          </summary>
-          <div style={{ borderTop: '1px solid var(--db-line)' }}>
-            {users.map((u, i) => (
-              <div key={u.user_id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px', borderTop: i === 0 ? 'none' : '1px solid var(--db-line)', fontSize: 13 }}>
-                <span style={{ fontWeight: 600, color: 'var(--db-navy)', minWidth: 160 }}>{u.display_name}</span>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--db-ink-soft)', flex: 1 }}>{u.databricks_upn}</span>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--db-ink-soft)' }}>
-                  <input type="checkbox" checked={isAdmin(u)} onChange={() => toggleAdmin(u)} />
-                  Admin
-                </label>
-              </div>
-            ))}
-          </div>
-        </details>
       )}
 
       {/* searchable filters */}
@@ -526,7 +443,7 @@ export default function AdminPage({ session: _session }: { session: Session }) {
         <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff', borderRadius: 'var(--r-md)', border: '1px solid var(--db-line)', boxShadow: 'var(--shadow-sm)', overflow: 'hidden' }}>
           <thead>
             <tr>
-              {['Principal', 'Email', 'Workspace', 'Catalog', 'Schema', 'Volume', 'Folder', 'Permission', 'Scope', 'Granted By', ''].map((h, i) => (
+              {['Principal', 'Workspace', 'Catalog', 'Schema', 'Volume', 'Folder', 'Permission', 'Scope', 'Granted By', ''].map((h, i) => (
                 <th key={i} style={{ textAlign: 'left', padding: '11px 14px', fontSize: 11, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', color: '#fff', background: 'var(--db-navy)', whiteSpace: 'nowrap' }}>{h}</th>
               ))}
             </tr>
@@ -547,7 +464,6 @@ export default function AdminPage({ session: _session }: { session: Session }) {
                     }}>{p.principal_type === 'GROUP' ? 'GROUP' : 'USER'}</span>
                     {p.display_name}
                   </td>
-                  <td style={{ padding: '10px 14px', color: 'var(--db-ink-soft)', fontSize: 12, fontFamily: 'var(--font-mono)' }}>{p.databricks_upn || ''}</td>
                   <td style={{ padding: '10px 14px', color: 'var(--db-ink-soft)', fontSize: 13 }}>{p.workspace_name}</td>
                   <td style={{ padding: '10px 14px', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{p.uc_catalog}</td>
                   <td style={{ padding: '10px 14px', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{p.uc_schema}</td>
@@ -597,7 +513,7 @@ export default function AdminPage({ session: _session }: { session: Session }) {
               )
             })}
             {filtered.length === 0 && (
-              <tr><td colSpan={11} style={{ padding: '48px', textAlign: 'center', color: 'var(--db-ink-muted)' }}>
+              <tr><td colSpan={10} style={{ padding: '48px', textAlign: 'center', color: 'var(--db-ink-muted)' }}>
                 {anyFilter ? 'No permissions match the selected filters.' : 'No permissions configured.'}
               </td></tr>
             )}

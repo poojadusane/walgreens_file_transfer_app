@@ -1,0 +1,64 @@
+---
+title: AD Group Removal → Walgreens File Transfer App SLA
+---
+flowchart TD
+    classDef startNode fill:#1e3a5f,color:#ffffff,stroke:#1e3a5f,font-weight:bold
+    classDef principleNode fill:#e8f4fd,color:#1a365d,stroke:#3182ce,stroke-width:2px,font-style:italic
+    classDef decisionNode fill:#7c3aed,color:#ffffff,stroke:#5b21b6,stroke-width:2px
+    classDef processNode fill:#bfdbfe,color:#1e3a8a,stroke:#3b82f6,stroke-width:1.5px
+    classDef warningNode fill:#fef3c7,color:#92400e,stroke:#f59e0b,stroke-width:2.5px,font-weight:bold
+    classDef revokedNode fill:#dc2626,color:#ffffff,stroke:#991b1b,stroke-width:2.5px,font-weight:bold
+    classDef footerNode fill:#f0fdf4,color:#14532d,stroke:#16a34a,stroke-width:1.5px,font-style:italic
+
+    T0["User removed from AD group at time T0"]:::startNode
+
+    PRINCIPLE[/"App reads the user's groups from its JWT on every request.<br/>It only calls SCIM /Me when a NEW JWT is minted — at login or when the JWT expires.<br/>Between those moments, AIM is irrelevant."/]:::principleNode
+
+    D1{{"Does the user log out<br/>and log back in?"}}:::decisionNode
+
+    T0 --> PRINCIPLE --> D1
+
+    %% Branch A — no logout
+    A1["JWT still valid (up to 4h TTL)"]:::processNode
+    A2["App reads groups FROM JWT —<br/>does NOT call /Me"]:::processNode
+    A3["User STILL sees and downloads files"]:::warningNode
+    A4["...until JWT expires<br/>(up to ~4h after first login)"]:::processNode
+
+    D1 -->|"No — keeps existing session"| A1
+    A1 --> A2 --> A3 --> A4
+
+    %% Branch B — re-login
+    B1["App calls SCIM /Me<br/>to re-resolve groups"]:::processNode
+
+    D1 -->|"Yes — re-login mints a new JWT"| B1
+
+    %% Convergence
+    SCIM["App calls SCIM /Me"]:::processNode
+    A4 --> SCIM
+    B1 --> SCIM
+
+    %% Second decision
+    D2{{"Has AIM synced the removal yet?<br/>Worst case: up to ~40 min (token tier);<br/>possibly ~5 min if re-login counts as interactive — UNCONFIRMED"}}:::decisionNode
+
+    SCIM --> D2
+
+    %% Not yet synced
+    C1["/Me STILL returns the group"]:::processNode
+    C2["User STILL sees and downloads files"]:::warningNode
+    C3["Re-checked again at next JWT renewal"]:::processNode
+
+    D2 -->|"Not yet synced<br/>(e.g. re-login within ~40 min of removal)"| C1
+    C1 --> C2 --> C3
+
+    %% Synced
+    E1["/Me returns NO group"]:::processNode
+    E2["Access REVOKED —<br/>folders disappear"]:::revokedNode
+
+    D2 -->|"Synced<br/>(e.g. re-login after ~40 min, at ~50 min)"| E1
+    E1 --> E2
+
+    %% Footer
+    FOOTER[/"Effective removal delay = AIM refresh window (≤40 min token / ≤5 min interactive)<br/>+ up to one JWT lifetime.<br/>Shortening JWT (4h → ~30 min) stops the app from being the bottleneck<br/>but can't go below AIM's floor."/]:::footerNode
+
+    C3 --> FOOTER
+    E2 --> FOOTER

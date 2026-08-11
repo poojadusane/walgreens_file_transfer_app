@@ -1,0 +1,166 @@
+# =============================================================================
+# Walgreens File Download — Databricks Asset Bundle (DABs)
+# =============================================================================
+# One bundle, one target per environment. The SAME code deploys to
+# dev -> test -> uat -> prod by switching `-t <target>`. NOTHING in main.py or
+# app.yaml changes between environments.
+#
+# Deploy (run on the Walgreens VDI — deploys as the signed-in user via SSO):
+#   databricks auth login
+#   databricks bundle validate -t dev
+#   databricks bundle run  setup_download_tables -t dev   # one-time: create tables
+#   databricks bundle deploy -t dev
+#   databricks bundle run  file_download -t dev           # start the app
+#
+# ---------------------------------------------------------------------------
+# WHAT IS AND ISN'T COMMITTED HERE (Databricks-recommended pattern)
+# ---------------------------------------------------------------------------
+# Environment-specific NON-SECRET config (workspace host, root_path, catalog,
+# schema, warehouse id, external-location path) lives in the targets mapping
+# below. These are addresses/names, not credentials — committing them is safe
+# AND a guardrail: `-t prod` cannot deploy to dev because host is pinned per
+# target.
+#
+# The ONLY true SECRET is JWT_SECRET -> stored in a Databricks secret scope,
+# injected via valueFrom, never committed.
+#
+# Auth (Walgreens): PATs are disabled -> `databricks auth login` (OAuth/SSO),
+# deploy interactively from the VDI. Each environment is a SEPARATE app in that
+# environment's workspace (catalogs are ISOLATED per workspace).
+# =============================================================================
+
+bundle:
+  name: walgreens-file-download
+
+# ---------------------------------------------------------------------------
+# Resources: the app + a one-time setup job that creates the config tables.
+# ---------------------------------------------------------------------------
+resources:
+  apps:
+    file_download:
+      name: walgreens-file-download
+      description: "Secure Unity Catalog file download for business users"
+      source_code_path: ./            # bundle syncs this repo dir -> workspace
+      resources:
+        - name: jwt_secret
+          secret:
+            scope: ${var.jwt_secret_scope}
+            key: ${var.jwt_secret_key}
+            permission: READ
+      config:
+        env:
+          - name: APP_CATALOG
+            value: ${var.app_catalog}
+          - name: APP_SCHEMA
+            value: ${var.app_schema}
+          - name: WAREHOUSE_ID
+            value: ${var.warehouse_id}
+          - name: JWT_SECRET
+            valueFrom: jwt_secret     # resolved from the secret resource above
+
+  # One-time (idempotent) job that creates the 3 EXTERNAL config tables at the
+  # target's ADLS path. Parameters default to this target's ${var.*}, so
+  # `-t test` uses test's catalog/schema/ext_location automatically.
+  jobs:
+    setup_download_tables:
+      name: "[${bundle.target}] walgreens-file-download setup"
+      parameters:
+        - name: catalog
+          default: ${var.app_catalog}
+        - name: schema
+          default: ${var.app_schema}
+        - name: ext_location
+          default: ${var.ext_location}
+        - name: admin_email
+          default: ${var.admin_email}
+        - name: admin_name
+          default: ${var.admin_name}
+      tasks:
+        - task_key: create_tables
+          notebook_task:
+            notebook_path: ./setup/create_tables.py
+
+# ---------------------------------------------------------------------------
+# Non-secret, per-target variables. Values are set inside each target below.
+# (jwt_secret_scope is the scope NAME, not the secret value.)
+# ---------------------------------------------------------------------------
+variables:
+  app_catalog:      { description: "Config catalog (download_user/workspaces/permissions tables)" }
+  app_schema:       { description: "Config schema", default: access_metadata }
+  warehouse_id:     { description: "SQL warehouse id used to read/write config tables" }
+  ext_location:     { description: "abfss:// base path for the EXTERNAL config tables" }
+  admin_email:      { description: "First admin's SSO email (bootstrap)", default: "" }
+  admin_name:       { description: "First admin's display name", default: "" }
+  jwt_secret_scope: { description: "Secret scope holding the JWT signing secret" }
+  jwt_secret_key:   { description: "Key within the scope", default: jwt_secret }
+
+# ---------------------------------------------------------------------------
+# Targets: one per environment. Fill TODO_* / [WAG-RULE] as envs are shared.
+# ---------------------------------------------------------------------------
+targets:
+
+  # ---- DEV (real values; the only env available today) -------------------
+  dev:
+    default: true
+    mode: development
+    workspace:
+      host: https://adb-2596972336492633.13.azuredatabricks.net
+      # Walgreens-designated shared apps folder (write access granted here).
+      root_path: /Workspace/dlx-databricks/Resources/Apps/${bundle.name}/${bundle.target}
+    variables:
+      app_catalog: dlx_platform_dev
+      app_schema: access_metadata
+      warehouse_id: TODO_DEV_WAREHOUSE_ID              # confirm the dev SQL warehouse id
+      ext_location: abfss://access-metadata@dlxdevplatfmetadatasa10.dfs.core.windows.net  # confirm exact container/path
+      admin_email: TODO_DEV_ADMIN_EMAIL                # e.g. pooja.dusane@walgreens.com
+      admin_name: TODO_DEV_ADMIN_NAME
+      jwt_secret_scope: TODO_DEV_SECRET_SCOPE          # create a scope + jwt_secret key
+      jwt_secret_key: jwt_secret
+
+  # ---- TEST (fill when Walgreens shares it) ------------------------------
+  test:
+    mode: production
+    workspace:
+      host: TODO_TEST_HOST                             # [WAG-RULE]
+      root_path: /Workspace/dlx-databricks/Resources/Apps/${bundle.name}/${bundle.target}  # [WAG-RULE confirm]
+    variables:
+      app_catalog: TODO_TEST_PLATFORM_CATALOG
+      app_schema: access_metadata
+      warehouse_id: TODO_TEST_WAREHOUSE_ID
+      ext_location: TODO_TEST_EXT_LOCATION             # test storage account abfss:// path
+      admin_email: TODO_TEST_ADMIN_EMAIL
+      admin_name: TODO_TEST_ADMIN_NAME
+      jwt_secret_scope: TODO_TEST_SECRET_SCOPE
+      jwt_secret_key: jwt_secret
+
+  # ---- UAT (fill later) --------------------------------------------------
+  uat:
+    mode: production
+    workspace:
+      host: TODO_UAT_HOST                              # [WAG-RULE]
+      root_path: /Workspace/dlx-databricks/Resources/Apps/${bundle.name}/${bundle.target}  # [WAG-RULE]
+    variables:
+      app_catalog: TODO_UAT_PLATFORM_CATALOG
+      app_schema: access_metadata
+      warehouse_id: TODO_UAT_WAREHOUSE_ID
+      ext_location: TODO_UAT_EXT_LOCATION
+      admin_email: TODO_UAT_ADMIN_EMAIL
+      admin_name: TODO_UAT_ADMIN_NAME
+      jwt_secret_scope: TODO_UAT_SECRET_SCOPE
+      jwt_secret_key: jwt_secret
+
+  # ---- PROD (fill later) -------------------------------------------------
+  prod:
+    mode: production
+    workspace:
+      host: TODO_PROD_HOST                             # [WAG-RULE]
+      root_path: /Workspace/dlx-databricks/Resources/Apps/${bundle.name}/${bundle.target}  # [WAG-RULE]
+    variables:
+      app_catalog: TODO_PROD_PLATFORM_CATALOG
+      app_schema: access_metadata
+      warehouse_id: TODO_PROD_WAREHOUSE_ID
+      ext_location: TODO_PROD_EXT_LOCATION
+      admin_email: TODO_PROD_ADMIN_EMAIL
+      admin_name: TODO_PROD_ADMIN_NAME
+      jwt_secret_scope: TODO_PROD_SECRET_SCOPE
+      jwt_secret_key: jwt_secret

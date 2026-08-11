@@ -1,75 +1,69 @@
--- Walgreens File Transfer — setup / reseed
+-- Walgreens File Download — config tables (MANUAL FALLBACK)
 -- =============================================================================
--- BEFORE RUNNING: replace TWO placeholders below with the values you set in
--- app.yaml (use Find & Replace, Ctrl+H):
---   <APP_CATALOG>  -> your catalog   (e.g. dlx_platform_dev)
---   <APP_SCHEMA>   -> your schema    (e.g. access_metadata; default is 'config')
+-- PRIMARY setup is the parameterized bundle job (recommended):
+--     databricks bundle run setup_download_tables -t <env>
+--   which runs setup/create_tables.py and picks each env's catalog / schema /
+--   external-location path automatically from databricks.yml.
 --
--- This is a WIPE & RESEED script: it DROPs and recreates the 3 config tables,
--- clearing any existing users / workspaces / permissions. Comment out the DROP
--- lines if you need to preserve existing data.
+-- This .sql file is a MANUAL fallback for running the same DDL by hand in the
+-- SQL editor. Replace the THREE placeholders first (Find & Replace):
+--     <APP_CATALOG>   -> config catalog   (e.g. dlx_platform_dev)
+--     <APP_SCHEMA>    -> config schema    (e.g. access_metadata)
+--     <EXT_LOCATION>  -> abfss:// base    (e.g. abfss://access-metadata@dlxdevplatfmetadatasa10.dfs.core.windows.net)
+--
+-- Tables are EXTERNAL (LOCATION ...): managed tables are blocked by the storage
+-- firewall in these environments. Run as an identity that can write to the ADLS
+-- path, then grant the app's service principal SELECT/MODIFY on the schema.
 -- =============================================================================
 
 CREATE SCHEMA IF NOT EXISTS <APP_CATALOG>.<APP_SCHEMA>;
 
--- ── workspaces ────────────────────────────────────────────────────────────────
--- One row per real Databricks workspace you want to group volumes under.
--- Catalog/schema are NOT stored here — each permission row carries its own
--- catalog + schema, so one workspace can expose volumes from many catalogs and
--- many schemas.
-DROP TABLE IF EXISTS <APP_CATALOG>.<APP_SCHEMA>.workspaces;
-CREATE TABLE <APP_CATALOG>.<APP_SCHEMA>.workspaces (
-  workspace_id STRING,   -- the real Databricks workspace id (e.g. 5346339970823458)
-  display_name STRING,   -- friendly name shown in the UI
-  host_url     STRING    -- e.g. https://adb-<id>.<n>.azuredatabricks.net
-);
+-- ── download_workspaces ──────────────────────────────────────────────────────
+-- One row per Databricks workspace (helps distinguish dev/test/prod, groups volumes).
+CREATE TABLE IF NOT EXISTS <APP_CATALOG>.<APP_SCHEMA>.download_workspaces (
+  workspace_id STRING,
+  display_name STRING,
+  host_url     STRING
+)
+USING DELTA
+LOCATION '<EXT_LOCATION>/download_workspaces';
 
--- ── users ─────────────────────────────────────────────────────────────────────
--- One row per person who can access the app.
--- databricks_upn must match their Azure AD SSO email exactly.
-DROP TABLE IF EXISTS <APP_CATALOG>.<APP_SCHEMA>.users;
-CREATE TABLE <APP_CATALOG>.<APP_SCHEMA>.users (
+-- ── download_user ────────────────────────────────────────────────────────────
+-- ADMIN LIST ONLY. is_admin=true grants admin rights in the app. Regular
+-- end-user access is by AD group (see download_permissions), not this table.
+CREATE TABLE IF NOT EXISTS <APP_CATALOG>.<APP_SCHEMA>.download_user (
   user_id        STRING,
   display_name   STRING,
   databricks_upn STRING,
   is_admin       BOOLEAN
-);
+)
+USING DELTA
+LOCATION '<EXT_LOCATION>/download_user';
 
--- ── permissions ───────────────────────────────────────────────────────────────
--- One row per (principal, workspace, catalog, schema, volume, folder) grant.
--- A grant can be to a USER or to an AD GROUP:
---   principal_type = 'USER'  -> principal_id is the users.user_id
---   principal_type = 'GROUP' -> principal_id is the AD group display name
--- At login the app resolves the caller's own group memberships and matches any
--- grant whose principal is the user OR one of their groups.
--- uc_catalog / uc_schema pin down where the volume lives (one workspace can span
--- multiple catalogs/schemas). COLUMN ORDER IS LOAD-BEARING: the app inserts
--- positionally in this exact order. permission is 'READ' or 'DOWNLOAD'.
-DROP TABLE IF EXISTS <APP_CATALOG>.<APP_SCHEMA>.permissions;
-CREATE TABLE <APP_CATALOG>.<APP_SCHEMA>.permissions (
-  principal_type STRING,     -- 'USER' or 'GROUP'
-  principal_id   STRING,     -- users.user_id (USER) or AD group display name (GROUP)
-  workspace_id STRING,
-  uc_catalog   STRING,
-  uc_schema    STRING,
-  volume       STRING,
-  folder_path  STRING,
-  permission   STRING,      -- 'READ' or 'DOWNLOAD'
-  granted_by   STRING,
-  granted_at   TIMESTAMP,
-  scope        STRING       -- 'VOLUME' (admin only, USER only) | 'FOLDER_TREE'
-                            -- (folder + everything under it) | 'FOLDER' (just this folder's files)
-);
+-- ── download_permissions ─────────────────────────────────────────────────────
+-- One row per grant. principal_type = 'USER' (principal_id = email) or 'GROUP'
+-- (principal_id = AD group display name). COLUMN ORDER IS LOAD-BEARING — the app
+-- inserts positionally in this exact order. permission is 'READ' or 'DOWNLOAD';
+-- scope is 'VOLUME' (admin/USER only) | 'FOLDER_TREE' | 'FOLDER'.
+CREATE TABLE IF NOT EXISTS <APP_CATALOG>.<APP_SCHEMA>.download_permissions (
+  principal_type STRING,
+  principal_id   STRING,
+  workspace_id   STRING,
+  uc_catalog     STRING,
+  uc_schema      STRING,
+  volume         STRING,
+  folder_path    STRING,
+  permission     STRING,
+  granted_by     STRING,
+  granted_at     TIMESTAMP,
+  scope          STRING
+)
+USING DELTA
+LOCATION '<EXT_LOCATION>/download_permissions';
 
 -- ── FIRST ADMIN (required) ──────────────────────────────────────────────────
--- You must insert at least one admin before opening the app, or no one can log
--- in. Replace the values with your own. user_id can be any unique string
--- (your Databricks numeric id is a good choice); databricks_upn must match your
--- SSO email exactly; is_admin must be true.
---
--- INSERT INTO <APP_CATALOG>.<APP_SCHEMA>.users
+-- Insert at least one admin before opening the app. databricks_upn must match
+-- the SSO email exactly.
+-- INSERT INTO <APP_CATALOG>.<APP_SCHEMA>.download_user
 --   (user_id, display_name, databricks_upn, is_admin) VALUES
---   ('<your_user_id>', '<Your Name>', '<you@company.com>', true);
---
--- Everything else (workspaces, more users, permissions) can be added from the
--- app's Admin page or via CSV import — no SQL needed after this.
+--   ('<your_user_id>', '<Your Name>', '<you@walgreens.com>', true);

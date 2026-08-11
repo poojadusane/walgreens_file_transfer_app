@@ -90,7 +90,7 @@ def resolve_perm(uid: str, groups: list, workspace_id: str, uc_catalog: str,
     # Find every grant the user (or their groups) has on this volume, then pick
     # one that COVERS the requested folder. Prefer DOWNLOAD over READ.
     rows = run_sql(f"""
-        SELECT permission, scope, folder_path FROM {APP_CATALOG}.{APP_SCHEMA}.permissions
+        SELECT permission, scope, folder_path FROM {APP_CATALOG}.{APP_SCHEMA}.download_permissions
         WHERE {_principal_clause(uid, groups)} AND workspace_id = '{workspace_id}'
           AND uc_catalog = '{uc_catalog}' AND uc_schema = '{uc_schema}'
           AND volume = '{volume}'
@@ -113,8 +113,10 @@ def vol_path(uc_catalog: str, uc_schema: str, volume: str,
 
 # ── auth ─────────────────────────────────────────────────────────────────────
 
-TOKEN_TTL_SECONDS = 4 * 60 * 60   # 4h — group memberships are cached in the JWT
-                                  # this long, so a group change propagates within ~4h.
+TOKEN_TTL_SECONDS = 10 * 60   # 10 min — group memberships are cached in the JWT.
+# Short so an AD-group removal is re-resolved (via SCIM /Me) at least this often;
+# the frontend silently re-mints the token on expiry (no re-login prompt), so this
+# is invisible to users. Effective removal delay ≈ AIM refresh window + this TTL.
 
 
 def _workspace_url(request: Request) -> str:
@@ -170,7 +172,7 @@ def me(request: Request):
     # it only records who is an ADMIN and an optional display name. A user with
     # no users row logs in as a non-admin; their access comes from group grants.
     rows = run_sql(
-        f"SELECT * FROM {APP_CATALOG}.{APP_SCHEMA}.users WHERE databricks_upn = '{email}'"
+        f"SELECT * FROM {APP_CATALOG}.{APP_SCHEMA}.download_user WHERE databricks_upn = '{email}'"
     )
     if rows:
         user = rows[0]
@@ -199,58 +201,6 @@ def me(request: Request):
     return {"token": token, "user": user}
 
 
-@app.get("/api/debug/whoami")
-def debug_whoami(request: Request):
-    # TEMPORARY diagnostic — shows exactly what the app can see about the caller,
-    # so we can tell why group grants aren't resolving. Remove after debugging.
-    tok = request.headers.get("X-Forwarded-Access-Token", "")
-    result = {
-        "email": request.headers.get("X-Forwarded-Email", ""),
-        "has_forwarded_token": bool(tok),
-        "resolved_groups": [],
-        "scim_error": None,
-        "scim_raw_group_count": 0,
-    }
-    if not tok:
-        result["scim_error"] = "No X-Forwarded-Access-Token header (OBO not forwarding a user token)"
-        return result
-    try:
-        host = _workspace_url(request)
-        result["host_used"] = host
-        import urllib.request, json as _json
-        req = urllib.request.Request(
-            f"{host}/api/2.0/preview/scim/v2/Me",
-            headers={"Authorization": f"Bearer {tok}"},
-        )
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = _json.loads(resp.read().decode("utf-8"))
-        raw = data.get("groups") or []
-        result["scim_raw_group_count"] = len(raw)
-        result["resolved_groups"] = [g.get("display") for g in raw if g.get("display")]
-    except Exception as e:
-        result["scim_error"] = f"{type(e).__name__}: {e}"
-    return result
-
-
-@app.get("/api/debug/lsvol")
-def debug_lsvol(uc_catalog: str, uc_schema: str, volume: str, folder: str):
-    # TEMPORARY diagnostic — lists a volume path AS THE APP SP and returns the
-    # raw result or exception, so the UI's swallowed "Request failed" becomes the
-    # actual error (firewall vs path vs permission). Remove after debugging.
-    path = vol_path(uc_catalog, uc_schema, volume, folder)
-    out = {"path": path, "ok": False, "entry_count": 0, "sample": [], "error": None}
-    try:
-        entries = list(w.files.list_directory_contents(path))
-        out["ok"] = True
-        out["entry_count"] = len(entries)
-        out["sample"] = [
-            {"name": e.name, "is_dir": e.is_directory} for e in entries[:10]
-        ]
-    except Exception as e:
-        out["error"] = f"{type(e).__name__}: {e}"
-    return out
-
-
 # ── workspaces ────────────────────────────────────────────────────────────────
 
 @app.get("/api/workspaces")
@@ -259,8 +209,8 @@ def get_workspaces(user: dict = Depends(current_user)):
     groups = user.get("groups") or []
     return run_sql(f"""
         SELECT DISTINCT w.workspace_id, w.display_name, w.host_url
-        FROM {APP_CATALOG}.{APP_SCHEMA}.workspaces w
-        JOIN {APP_CATALOG}.{APP_SCHEMA}.permissions p ON w.workspace_id = p.workspace_id
+        FROM {APP_CATALOG}.{APP_SCHEMA}.download_workspaces w
+        JOIN {APP_CATALOG}.{APP_SCHEMA}.download_permissions p ON w.workspace_id = p.workspace_id
         WHERE {_principal_clause(uid, groups, prefix="p.")}
         ORDER BY w.display_name
     """)
@@ -274,7 +224,7 @@ def get_volumes(workspace_id: str, user: dict = Depends(current_user)):
     user_groups = user.get("groups") or []
     rows = run_sql(f"""
         SELECT uc_catalog, uc_schema, volume, folder_path, permission, scope
-        FROM {APP_CATALOG}.{APP_SCHEMA}.permissions
+        FROM {APP_CATALOG}.{APP_SCHEMA}.download_permissions
         WHERE {_principal_clause(uid, user_groups)} AND workspace_id = '{workspace_id}'
         ORDER BY uc_catalog, uc_schema, volume, folder_path
     """)
@@ -395,51 +345,18 @@ def admin_list_permissions(user: dict = Depends(require_admin)):
                w.display_name AS workspace_name,
                p.uc_catalog, p.uc_schema, p.volume, p.folder_path, p.permission, p.scope,
                COALESCE(g.display_name, p.granted_by) AS granted_by, p.granted_at
-        FROM {APP_CATALOG}.{APP_SCHEMA}.permissions p
-        LEFT JOIN {APP_CATALOG}.{APP_SCHEMA}.users u
+        FROM {APP_CATALOG}.{APP_SCHEMA}.download_permissions p
+        LEFT JOIN {APP_CATALOG}.{APP_SCHEMA}.download_user u
                ON p.principal_type = 'USER' AND p.principal_id = u.user_id
-        JOIN {APP_CATALOG}.{APP_SCHEMA}.workspaces w ON p.workspace_id = w.workspace_id
-        LEFT JOIN {APP_CATALOG}.{APP_SCHEMA}.users g ON p.granted_by = g.user_id
+        JOIN {APP_CATALOG}.{APP_SCHEMA}.download_workspaces w ON p.workspace_id = w.workspace_id
+        LEFT JOIN {APP_CATALOG}.{APP_SCHEMA}.download_user g ON p.granted_by = g.user_id
         ORDER BY display_name, p.workspace_id, p.uc_catalog, p.uc_schema, p.volume, p.folder_path
     """)
 
 
-@app.get("/api/admin/users")
-def admin_list_users(user: dict = Depends(require_admin)):
-    return run_sql(
-        f"SELECT user_id, display_name, databricks_upn, is_admin "
-        f"FROM {APP_CATALOG}.{APP_SCHEMA}.users ORDER BY display_name"
-    )
-
-
 @app.get("/api/admin/workspaces")
 def admin_list_workspaces(user: dict = Depends(require_admin)):
-    return run_sql(f"SELECT * FROM {APP_CATALOG}.{APP_SCHEMA}.workspaces ORDER BY display_name")
-
-
-class NewUser(BaseModel):
-    display_name: str
-    databricks_upn: str
-    is_admin: bool = False
-
-@app.post("/api/admin/user")
-def add_user(body: NewUser, user: dict = Depends(require_admin)):
-    name  = safe(body.display_name)
-    email = safe(body.databricks_upn).strip()
-    if not email:
-        raise HTTPException(400, "Email is required")
-    existing = run_sql(f"SELECT user_id FROM {APP_CATALOG}.{APP_SCHEMA}.users")
-    existing_ids = {r["user_id"] for r in existing}
-    uid  = email.split("@")[0].replace(".", "_").replace("-", "_")
-    base = uid; n = 1
-    while uid in existing_ids:
-        uid = f"{base}_{n}"; n += 1
-    is_admin = "true" if body.is_admin else "false"
-    run_sql(
-        f"INSERT INTO {APP_CATALOG}.{APP_SCHEMA}.users VALUES "
-        f"('{uid}','{name}','{email}',{is_admin})"
-    )
-    return {"ok": True, "user_id": uid}
+    return run_sql(f"SELECT * FROM {APP_CATALOG}.{APP_SCHEMA}.download_workspaces ORDER BY display_name")
 
 
 class NewWorkspace(BaseModel):
@@ -455,29 +372,14 @@ def add_workspace(body: NewWorkspace, user: dict = Depends(require_admin)):
     if not ws_id:
         raise HTTPException(400, "Workspace id is required")
     dupe = run_sql(
-        f"SELECT workspace_id FROM {APP_CATALOG}.{APP_SCHEMA}.workspaces "
+        f"SELECT workspace_id FROM {APP_CATALOG}.{APP_SCHEMA}.download_workspaces "
         f"WHERE workspace_id = '{ws_id}'"
     )
     if dupe:
         raise HTTPException(400, f"Workspace '{ws_id}' already exists")
     run_sql(
-        f"INSERT INTO {APP_CATALOG}.{APP_SCHEMA}.workspaces VALUES "
+        f"INSERT INTO {APP_CATALOG}.{APP_SCHEMA}.download_workspaces VALUES "
         f"('{ws_id}','{name}','{host}')"
-    )
-    return {"ok": True}
-
-
-class SetAdmin(BaseModel):
-    user_id: str
-    is_admin: bool
-
-@app.put("/api/admin/user/admin")
-def set_admin(body: SetAdmin, user: dict = Depends(require_admin)):
-    uid      = safe(body.user_id)
-    is_admin = "true" if body.is_admin else "false"
-    run_sql(
-        f"UPDATE {APP_CATALOG}.{APP_SCHEMA}.users SET is_admin={is_admin} "
-        f"WHERE user_id='{uid}'"
     )
     return {"ok": True}
 
@@ -486,7 +388,7 @@ VALID_SCOPES = ("VOLUME", "FOLDER_TREE", "FOLDER")
 
 def _is_admin_user(user_id: str) -> bool:
     rows = run_sql(
-        f"SELECT is_admin FROM {APP_CATALOG}.{APP_SCHEMA}.users WHERE user_id = '{user_id}'"
+        f"SELECT is_admin FROM {APP_CATALOG}.{APP_SCHEMA}.download_user WHERE user_id = '{user_id}'"
     )
     return bool(rows) and str(rows[0]["is_admin"]).lower() == "true"
 
@@ -528,7 +430,7 @@ def add_permission(body: PermRow, user: dict = Depends(require_admin)):
             raise HTTPException(403, "Whole-volume access can only be granted to admins")
     granter = user["user_id"]
     run_sql(f"""
-        INSERT INTO {APP_CATALOG}.{APP_SCHEMA}.permissions
+        INSERT INTO {APP_CATALOG}.{APP_SCHEMA}.download_permissions
         VALUES ('{ptype}','{pid}','{body.workspace_id}','{body.uc_catalog}','{body.uc_schema}',
                 '{body.volume}','{body.folder_path}','{body.permission}','{granter}',current_timestamp(),'{scope}')
     """)
@@ -559,7 +461,7 @@ def update_permission(body: UpdatePerm, user: dict = Depends(require_admin)):
             raise HTTPException(403, "Whole-volume access can only be granted to admins")
     granter = user["user_id"]
     run_sql(f"""
-        UPDATE {APP_CATALOG}.{APP_SCHEMA}.permissions
+        UPDATE {APP_CATALOG}.{APP_SCHEMA}.download_permissions
         SET permission='{body.permission}', scope='{scope}', granted_by='{granter}', granted_at=current_timestamp()
         WHERE principal_type='{ptype}' AND principal_id='{pid}' AND workspace_id='{body.workspace_id}'
           AND uc_catalog='{body.uc_catalog}' AND uc_schema='{body.uc_schema}'
@@ -581,7 +483,7 @@ class DeletePerm(BaseModel):
 def delete_permission(body: DeletePerm, user: dict = Depends(require_admin)):
     ptype, pid = _norm_principal(body)
     run_sql(f"""
-        DELETE FROM {APP_CATALOG}.{APP_SCHEMA}.permissions
+        DELETE FROM {APP_CATALOG}.{APP_SCHEMA}.download_permissions
         WHERE principal_type='{ptype}' AND principal_id='{pid}' AND workspace_id='{body.workspace_id}'
           AND uc_catalog='{body.uc_catalog}' AND uc_schema='{body.uc_schema}'
           AND volume='{body.volume}' AND folder_path='{body.folder_path}'
@@ -631,7 +533,7 @@ def bulk_permissions(body: BulkBody, user: dict = Depends(require_admin)):
         f" AND volume='{c.volume}' AND folder_path='{c.folder_path}')"
         for c in body.changes
     )
-    run_sql(f"DELETE FROM {APP_CATALOG}.{APP_SCHEMA}.permissions WHERE {conds}")
+    run_sql(f"DELETE FROM {APP_CATALOG}.{APP_SCHEMA}.download_permissions WHERE {conds}")
     to_add = [c for c in body.changes if c.permission]
     if to_add:
         granter = user["user_id"]
@@ -640,7 +542,7 @@ def bulk_permissions(body: BulkBody, user: dict = Depends(require_admin)):
             f"'{c.volume}','{c.folder_path}','{c.permission}','{granter}',current_timestamp(),'FOLDER')"
             for c in to_add
         )
-        run_sql(f"INSERT INTO {APP_CATALOG}.{APP_SCHEMA}.permissions VALUES {vals}")
+        run_sql(f"INSERT INTO {APP_CATALOG}.{APP_SCHEMA}.download_permissions VALUES {vals}")
     return {"ok": True, "applied": len(body.changes)}
 
 
@@ -654,7 +556,7 @@ async def import_csv(file: UploadFile = File(...), user: dict = Depends(require_
 
     existing = {
         r["databricks_upn"]: r["user_id"]
-        for r in run_sql(f"SELECT user_id, databricks_upn FROM {APP_CATALOG}.{APP_SCHEMA}.users")
+        for r in run_sql(f"SELECT user_id, databricks_upn FROM {APP_CATALOG}.{APP_SCHEMA}.download_user")
     }
     existing_ids = set(existing.values())
 
@@ -698,7 +600,7 @@ async def import_csv(file: UploadFile = File(...), user: dict = Depends(require_
                 while uid in existing_ids:
                     uid = f"{base}_{n}"; n += 1
                 run_sql(
-                    f"INSERT INTO {APP_CATALOG}.{APP_SCHEMA}.users VALUES "
+                    f"INSERT INTO {APP_CATALOG}.{APP_SCHEMA}.download_user VALUES "
                     f"('{uid}','{name}','{email}',false)"
                 )
                 existing[email] = uid
@@ -713,13 +615,13 @@ async def import_csv(file: UploadFile = File(...), user: dict = Depends(require_
             f" AND uc_schema='{r[4]}' AND volume='{r[5]}' AND folder_path='{r[6]}')"
             for r in perm_rows
         )
-        run_sql(f"DELETE FROM {APP_CATALOG}.{APP_SCHEMA}.permissions WHERE {conds}")
+        run_sql(f"DELETE FROM {APP_CATALOG}.{APP_SCHEMA}.download_permissions WHERE {conds}")
         granter = user["user_id"]
         vals = ", ".join(
             f"('{r[0]}','{r[1]}','{r[2]}','{r[3]}','{r[4]}','{r[5]}','{r[6]}','{r[7]}','{granter}',current_timestamp(),'{r[8]}')"
             for r in perm_rows
         )
-        run_sql(f"INSERT INTO {APP_CATALOG}.{APP_SCHEMA}.permissions VALUES {vals}")
+        run_sql(f"INSERT INTO {APP_CATALOG}.{APP_SCHEMA}.download_permissions VALUES {vals}")
 
     return {"users_added": users_added, "permissions_added": len(perm_rows)}
 

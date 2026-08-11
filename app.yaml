@@ -1,10 +1,14 @@
 command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# NOTE: For DABs deploys, these env values are OVERRIDDEN by the bundle's
+# resources.apps.file_transfer.config.env (sourced from per-target variables),
+# and JWT_SECRET comes from a secret scope via valueFrom. The placeholders below
+# are ONLY for standalone local dev — do NOT commit real env or secret values.
 env:
   - name: WAREHOUSE_ID
-    value: "c65468b09820ba98"          # set to your workspace's SQL warehouse id
+    value: ""                 # local dev only; DABs overrides per target
   - name: JWT_SECRET
-    value: "change-me"                  # set any long random string
+    value: ""                 # local dev only; DABs injects from secret scope
   - name: APP_CATALOG
-    value: "dlx_platform_dev"           # catalog holding the app's config tables
+    value: ""                 # local dev only; DABs overrides per target
   - name: APP_SCHEMA
-    value: "access_metadata"            # schema within that catalog (default: config)
+    value: "access_metadata"  # default; DABs may override per target

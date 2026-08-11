@@ -6,3 +6,8 @@ __pycache__/
 .DS_Store
 *.egg-info/
 .venv/
+
+# NOTE: frontend/dist IS intentionally committed. Databricks best practice is to
+# build the frontend in CI, but Walgreens deploys manually from a VDI that has
+# git but NOT Node, so the pre-built dist must ship in the repo. Revisit if/when
+# a CI pipeline with a build step is set up.

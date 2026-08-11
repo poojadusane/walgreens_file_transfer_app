@@ -8,13 +8,37 @@ function headers() {
   return { 'Content-Type': 'application/json', 'X-LB-Token': token() }
 }
 
-async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
+// Silently re-mint the app JWT via /api/me. The Databricks SSO session outlives
+// the short JWT, so X-Forwarded-* headers are still present and this succeeds
+// without any user interaction. Returns true if a fresh token was stored.
+async function refreshToken(): Promise<boolean> {
+  try {
+    const res = await fetch(`${BASE}/me`, { headers: { 'Content-Type': 'application/json' } })
+    if (!res.ok) return false
+    const data = await res.json()
+    if (data?.token) {
+      localStorage.setItem('lb_token', data.token)
+      return true
+    }
+    return false
+  } catch {
+    return false
+  }
+}
+
+async function req<T>(method: string, path: string, body?: unknown, _retried = false): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method,
     headers: headers(),
     body: body ? JSON.stringify(body) : undefined,
   })
   if (res.status === 401) {
+    // JWT expired — try to silently re-mint it once and retry the request.
+    // Don't retry the refresh call itself (path === '/me') to avoid a loop.
+    if (!_retried && path !== '/me' && (await refreshToken())) {
+      return req<T>(method, path, body, true)
+    }
+    // Genuine session loss (SSO gone) — fall back to the login screen.
     localStorage.removeItem('lb_token')
     localStorage.removeItem('lb_session')
     window.location.reload()
@@ -51,15 +75,12 @@ export const api = {
     }),
 
   adminGetPermissions: ()           => req<Permission[]>('GET', '/admin/permissions'),
-  adminGetUsers:       ()           => req<AdminUser[]>('GET', '/admin/users'),
   adminGetWorkspaces:  ()           => req<Workspace[]>('GET', '/admin/workspaces'),
   adminAddPermission:  (p: PermBody)    => req('POST', '/admin/permission', p),
   adminUpdatePermission: (p: PermBody)  => req('PUT', '/admin/permission', p),
   adminDeletePermission: (p: DeleteBody) => req('DELETE', '/admin/permission', p),
   adminBulkPermissions: (changes: BulkChange[]) => req('POST', '/admin/permissions/bulk', { changes }),
-  adminAddUser:      (b: AddUserBody)      => req<{ ok: boolean; user_id: string }>('POST', '/admin/user', b),
   adminAddWorkspace: (b: AddWorkspaceBody) => req('POST', '/admin/workspace', b),
-  adminSetAdmin:     (b: SetAdminBody)     => req('PUT', '/admin/user/admin', b),
 
   adminImportCsv: async (file: File): Promise<ImportResult> => {
     const fd = new FormData()
@@ -100,11 +121,8 @@ export interface Permission {
   volume: string; folder_path: string
   permission: string; scope: Scope; granted_by: string; granted_at: string
 }
-export interface AdminUser  { user_id: string; display_name: string; databricks_upn: string; is_admin: boolean }
 export interface PermBody   { principal_type: PrincipalType; principal_id: string; workspace_id: string; uc_catalog: string; uc_schema: string; volume: string; folder_path: string; permission: string; scope: Scope }
 export interface DeleteBody { principal_type: PrincipalType; principal_id: string; workspace_id: string; uc_catalog: string; uc_schema: string; volume: string; folder_path: string }
 export interface BulkChange { principal_type: PrincipalType; principal_id: string; workspace_id: string; uc_catalog: string; uc_schema: string; volume: string; folder_path: string; permission: string | null }
 export interface ImportResult { users_added: number; permissions_added: number }
-export interface AddUserBody      { display_name: string; databricks_upn: string; is_admin: boolean }
 export interface AddWorkspaceBody { workspace_id: string; display_name: string; host_url: string }
-export interface SetAdminBody     { user_id: string; is_admin: boolean }
